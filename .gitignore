@@ -10,3 +10,5 @@ coverage/
 playwright-report/
 IMPLEMENTATION_PLAN.md
 prompt.md
+apps/server/data/
+.gitignore

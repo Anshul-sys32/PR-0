@@ -37,6 +37,46 @@ describe("agent tool loop", () => {
     expect(result.status).toBe("blocked"); expect(result.blockers[0]).toContain("not available");
   });
 
+  it("includes prior conversation turns before the current task", async () => {
+    const model = new ScriptedModel([{ content: "Follow-up answer", toolCalls: [], finishReason: "stop", usage: {} }]);
+    const task: AgentTask = { id: "task-followup", projectId: "project-1", title: "Follow up", description: "Continue from the previous result", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
+    await new AgentExecutor(model).execute(task, { systemPrompt: "", history: [{ role: "user", content: "First request" }, { role: "assistant", content: "First response" }] });
+    expect(model.requests[0]?.messages).toEqual([
+      { role: "user", content: "First request" },
+      { role: "assistant", content: "First response" },
+      { role: "user", content: "Continue from the previous result" }
+    ]);
+  });
+
+  it("retries transient provider failures only within the configured bound", async () => {
+    let attempts = 0;
+    const model: ModelAdapter = {
+      providerId: "retry-test",
+      getCapabilities: () => ({ streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }),
+      generate: async (): Promise<ModelResponse> => {
+        attempts++;
+        if (attempts < 3) throw new Error("Provider HTTP 503: temporarily unavailable");
+        return { content: "Recovered", toolCalls: [], finishReason: "stop", usage: {} };
+      }
+    };
+    const task: AgentTask = { id: "task-retry", projectId: "project-1", title: "Retry", description: "Retry a transient outage", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
+    const result = await new AgentExecutor(model).execute(task, { systemPrompt: "", maxRetries: 2 });
+    expect(result.summary).toBe("Recovered");
+    expect(attempts).toBe(3);
+  });
+
+  it("does not retry deterministic authentication failures", async () => {
+    let attempts = 0;
+    const model: ModelAdapter = {
+      providerId: "auth-test",
+      getCapabilities: () => ({ streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }),
+      generate: async (): Promise<ModelResponse> => { attempts++; throw new Error("Provider HTTP 401: invalid credentials"); }
+    };
+    const task: AgentTask = { id: "task-auth", projectId: "project-1", title: "Auth failure", description: "Fail without retry", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
+    await expect(new AgentExecutor(model).execute(task, { systemPrompt: "", maxRetries: 4 })).rejects.toThrow("401");
+    expect(attempts).toBe(1);
+  });
+
   it("passes cancellation to the provider and stops before dispatching tools", async () => {
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });

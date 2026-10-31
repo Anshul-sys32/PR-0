@@ -1,19 +1,350 @@
 import { StrictMode, useEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import "./styles.css";
+import "./workspace.css";
 
 type Project = { id: string; name: string; rootPath: string };
-type Task = { id: string; title: string; status: string; role: string; description: string };
+type Task = { id: string; title: string; status: string; role: string; description: string; execution?: { provider: string; model: string; result: { summary: string; status: string } } | null };
 type Provider = { id: string; configured: boolean; defaultModel: string | null };
+type Conversation = { id: string; projectId: string; createdAt: string };
+type ChatMessage = { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string };
+type FileEntry = { name: string; path: string; type: "file" | "directory" | "symlink" | "other" };
+type SearchMatch = { path: string; line: number; text: string };
+type Approval = { id: string; taskId: string; action: string; risk: string; operationKind: string | null; createdAt: string };
+type TerminalSession = { id: string; projectId: string; taskId: string; workingDirectory: string; executable: string; args: string[]; status: "running" | "exited" | "failed" | "stopped"; output: string; exitCode: number | null };
+type GitStatus = { branch: string; changes: Array<{ status: string; path: string }> };
+type GitDiffSummary = { files: Array<{ path: string; added: number | null; deleted: number | null; staged: boolean }>; truncated: boolean };
+type MemoryNote = { id: string; projectId: string; kind: "fact" | "decision" | "outcome"; content: string; createdAt: string; updatedAt: string };
+type UsageSummary = { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; unknownCostRequests: number };
+type ManualTodo = { id: string; projectId: string; title: string; description: string; priority: number; acceptanceCriteria: string[]; status: "open" | "completed"; createdAt: string; updatedAt: string };
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const res = await fetch(`/api${path}`, { headers: { "content-type": "application/json" }, ...init }); const data = await res.json() as T & { error?: string }; if (!res.ok) throw new Error(data.error ?? "Request failed"); return data; };
 function App() {
   const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connected to local workspace"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "mock", configured: true, defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("mock"); const [modelId, setModelId] = useState("");
-  const load = async (preferredProject?: Project) => { const data = await api<{ projects: Project[] }>("/projects"); setProjects(data.projects); const project = preferredProject ?? active ?? data.projects[0]; setActive(project); if (project) setTasks((await api<{ tasks: Task[] }>(`/projects/${project.id}/tasks`)).tasks); else setTasks([]); };
+  const [agentRole, setAgentRole] = useState("orchestrator");
+  const [runningTaskId, setRunningTaskId] = useState<string>();
+  const [dependencyId, setDependencyId] = useState("");
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string>();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [explorerPath, setExplorerPath] = useState(".");
+  const [fileEntries, setFileEntries] = useState<FileEntry[]>([]);
+  const [fileSearch, setFileSearch] = useState("");
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
+  const [filePreview, setFilePreview] = useState<{ path: string; content: string }>();
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
+  const [terminalTaskId, setTerminalTaskId] = useState("");
+  const [terminalExecutable, setTerminalExecutable] = useState("npm");
+  const [terminalArguments, setTerminalArguments] = useState("");
+  const [gitStatus, setGitStatus] = useState<GitStatus>();
+  const [gitDiff, setGitDiff] = useState<GitDiffSummary>();
+  const [gitError, setGitError] = useState("");
+  const [memories, setMemories] = useState<MemoryNote[]>([]);
+  const [memoryKind, setMemoryKind] = useState<MemoryNote["kind"]>("fact");
+  const [memoryContent, setMemoryContent] = useState("");
+  const [editingMemoryId, setEditingMemoryId] = useState<string>();
+  const [usage, setUsage] = useState<UsageSummary>();
+  const [todos, setTodos] = useState<ManualTodo[]>([]);
+  const [todoTitle, setTodoTitle] = useState("");
+  const [todoDescription, setTodoDescription] = useState("");
+  const [todoPriority, setTodoPriority] = useState(0);
+  const [todoCriteria, setTodoCriteria] = useState("");
+  const [editingTodoId, setEditingTodoId] = useState<string>();
+  const [planSummary, setPlanSummary] = useState("");
+  const [planning, setPlanning] = useState(false);
+  const load = async (preferredProject?: Project) => { const data = await api<{ projects: Project[] }>("/projects"); setProjects(data.projects); const project = preferredProject ?? active ?? data.projects[0]; setActive(project); if (!project) {
+    setTasks([]); setResult(""); setConversations([]); setActiveConversationId(undefined); setMessages([]); setApprovals([]); setTerminalSessions([]); setMemories([]); setUsage(undefined); setTodos([]);
+    return;
+  }
+  const [taskData, conversationData, approvalData, terminalData, memoryData, usageData, todoData] = await Promise.all([
+    api<{ tasks: Task[] }>(`/projects/${project.id}/tasks`),
+    api<{ conversations: Conversation[] }>(`/projects/${project.id}/conversations`),
+    api<{ approvals: Approval[] }>(`/projects/${project.id}/approvals`),
+    api<{ sessions: TerminalSession[] }>(`/projects/${project.id}/terminal-sessions`),
+    api<{ memories: MemoryNote[] }>(`/projects/${project.id}/memory`),
+    api<{ usage: UsageSummary }>(`/projects/${project.id}/usage`),
+    api<{ todos: ManualTodo[] }>(`/projects/${project.id}/todos`)
+  ]);
+  setTasks(taskData.tasks);
+  setApprovals(approvalData.approvals);
+  setResult(taskData.tasks.find((task) => task.execution)?.execution?.result.summary ?? "");
+  setConversations(conversationData.conversations);
+  const conversation = conversationData.conversations.find((item) => item.id === activeConversationId) ?? conversationData.conversations[0];
+  setActiveConversationId(conversation?.id);
+  if (conversation) {
+    const messageData = await api<{ messages: ChatMessage[] }>(`/conversations/${conversation.id}/messages`);
+    setMessages(messageData.messages);
+  } else setMessages([]);
+  setTerminalSessions(terminalData.sessions);
+  setMemories(memoryData.memories);
+  setUsage(usageData.usage);
+  setTodos(todoData.todos);
+  };
   useEffect(() => { void load().catch((error: Error) => setStatus(error.message)); void api<{ providers: Provider[]; unavailable: string[] }>("/providers").then((data) => { setProviders(data.providers); setUnavailableProviders(data.unavailable); }).catch((error: Error) => setStatus(error.message)); }, []);
   const createProject = async () => { const rootPath = window.prompt("Workspace directory", "."); const name = window.prompt("Project name", "My workspace"); if (!rootPath || !name) return; try { const { project } = await api<{ project: Project }>("/projects", { method: "POST", body: JSON.stringify({ name, rootPath }) }); await load(project); } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create project"); } };
-  const send = async () => { if (!active || !message.trim()) return; setStatus("Creating execution task…"); try { const { conversation } = await api<{ conversation: { id: string } }>("/conversations", { method: "POST", body: JSON.stringify({ projectId: active.id }) }); const response = await api<{ task: Task }>(`/conversations/${conversation.id}/messages`, { method: "POST", body: JSON.stringify({ content: message, mode: "supervised" }) }); setMessage(""); setTasks((current) => [response.task, ...current]); setStatus("Task ready — run it when you are ready."); } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create task"); } };
+  const send = async () => {
+    if (!active || !message.trim()) return;
+    setStatus("Creating execution task…");
+    try {
+      let conversationId = activeConversationId;
+      if (!conversationId) {
+        const created = await api<{ conversation: Conversation }>("/conversations", { method: "POST", body: JSON.stringify({ projectId: active.id }) });
+        conversationId = created.conversation.id;
+        setConversations((current) => [created.conversation, ...current]);
+        setActiveConversationId(conversationId);
+      }
+      const response = await api<{ message: ChatMessage; task: Task }>(`/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ content: message, mode: "supervised", role: agentRole, dependencies: dependencyId ? [dependencyId] : [] }) });
+      setMessage(""); setDependencyId("");
+      setTasks((current) => [response.task, ...current]);
+      setMessages((current) => [...current, response.message]);
+      setStatus("Task ready — run it when you are ready.");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create task"); }
+  };
   const chooseProvider = (id: string) => { setProviderId(id); setModelId(providers.find((provider) => provider.id === id)?.defaultModel ?? ""); };
-  const run = async (task: Task) => { setStatus(`${providerId} model is executing…`); try { const data = await api<{ result: { summary: string }; provider: string; model: string }>(`/tasks/${task.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) }); setResult(data.result.summary); setStatus(`Task completed with ${data.provider} / ${data.model}.`); await load(); } catch (error) { setStatus(error instanceof Error ? error.message : "Execution failed"); } };
-  return <div className="shell"><aside><div className="brand"><span>PR</span><div>Project PR-0<small>local agent workspace</small></div></div><button className="project-button" onClick={() => void createProject()}>+ New project</button><section><p>PROJECTS</p>{projects.map((project) => <button className={active?.id === project.id ? "nav selected" : "nav"} key={project.id} onClick={() => void load(project)}>{project.name}</button>)}</section><section><p>WORKSPACE</p>{["Conversations", "Tasks", "Git", "Agent history", "Settings"].map((item) => <button className="nav" key={item}>{item}</button>)}</section><div className="connection">● {status}</div></aside><main><header><div><p className="eyebrow">ACTIVE PROJECT</p><h1>{active?.name ?? "No project selected"}</h1></div><div className="badge">Supervised mode</div></header><div className="grid"><section className="chat card"><div className="card-head"><h2>Orchestrator</h2><span>{providerId} / {modelId || "select model"}</span></div><div className="conversation">{result ? <article className="assistant"><b>Execution report</b><p>{result}</p></article> : <div className="empty">Describe a development task to create a persisted, runnable task.</div>}</div><div className="composer"><div className="provider-controls"><select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock (no cost)" : provider.id === "ollama" ? "Ollama (local)" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id}>{id} (configure server credentials)</option>)}</select>{providerId !== "mock" && <input aria-label="Model id" placeholder="Model id (or server default)" value={modelId} onChange={(event) => setModelId(event.target.value)} />}</div><div className="compose-row"><textarea aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="What should the team build or change?"/><button onClick={() => void send()} disabled={!active || !message.trim()}>Send ↵</button></div></div></section><section className="activity card"><div className="card-head"><h2>Agent activity</h2><span className="live">● live</span></div><div className="agent"><div className="avatar">O</div><div><b>Orchestrator</b><small>Routes plans and verifies completion</small></div><span>idle</span></div><h3>Execution queue</h3>{tasks.length ? tasks.map((task) => <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}</small></div>{task.status === "ready" && <button onClick={() => void run(task)}>Run</button>}</div>) : <div className="empty compact">No execution tasks yet.</div>}</section></div><section className="bottom card"><div className="card-head"><h2>Terminal & verification</h2><span>Secure runtime</span></div><div className="terminal"><span>$</span> Tools, process controls, and approvals are enforced server-side. Create a task to start an execution.</div></section></main></div>;
+  const run = async (task: Task) => {
+    setRunningTaskId(task.id);
+    setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: "running" } : item));
+    setStatus(`${providerId} model is executing…`);
+    try {
+      const data = await api<{ result?: { summary: string }; provider?: string; model?: string; cancelled?: boolean }>(`/tasks/${task.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      if (data.cancelled) {
+        setStatus("Task cancelled.");
+        await load();
+        return;
+      }
+      if (!data.result || !data.provider || !data.model) throw new Error("The server returned an incomplete task result");
+      setResult(data.result.summary);
+      setStatus(`Task completed with ${data.provider} / ${data.model}.`);
+      await load();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Execution failed");
+      await load();
+    } finally {
+      setRunningTaskId((current) => current === task.id ? undefined : current);
+    }
+  };
+  const cancel = async (task: Task) => {
+    setStatus("Cancelling task…");
+    try {
+      await api<{ ok: boolean }>(`/tasks/${task.id}/cancel`, { method: "POST" });
+      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: "cancelled" } : item));
+      setStatus("Task cancelled.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not cancel task");
+    }
+  };
+  const openConversation = async (conversationId: string) => {
+    setActiveConversationId(conversationId);
+    try {
+      const data = await api<{ messages: ChatMessage[] }>(`/conversations/${conversationId}/messages`);
+      setMessages(data.messages);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not load conversation");
+    }
+  };
+  const loadWorkspaceDirectory = async (path: string) => {
+    if (!active) return;
+    const data = await api<{ listing: { entries: FileEntry[] } }>("/files/list", { method: "POST", body: JSON.stringify({ projectId: active.id, path }) });
+    setExplorerPath(path); setFileEntries(data.listing.entries); setSearchMatches([]);
+  };
+  const searchWorkspace = async () => {
+    if (!active || !fileSearch.trim()) return;
+    try {
+      const data = await api<{ search: { results: SearchMatch[] } }>("/files/search", { method: "POST", body: JSON.stringify({ projectId: active.id, query: fileSearch, path: explorerPath, maxResults: 50 }) });
+      setSearchMatches(data.search.results);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Search failed"); }
+  };
+  const openWorkspaceFile = async (path: string) => {
+    if (!active) return;
+    try {
+      const data = await api<{ file: { path: string; content: string } }>("/files/read", { method: "POST", body: JSON.stringify({ projectId: active.id, path }) });
+      setFilePreview(data.file);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not open file"); }
+  };
+  useEffect(() => { if (active) void loadWorkspaceDirectory(explorerPath).catch((error: Error) => setStatus(error.message)); }, [active?.id]);
+  const decideApproval = async (approval: Approval, approved: boolean) => {
+    try {
+      await api<{ ok: boolean }>(`/approvals/${approval.id}/decision`, { method: "POST", body: JSON.stringify({ approved }) });
+      setStatus(approved ? "Approval granted." : "Operation rejected.");
+      if (active) await load();
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not record approval decision"); }
+  };
+  const startTerminal = async () => {
+    if (!active || !terminalTaskId) { setStatus("Choose a task before starting a terminal session."); return; }
+    const args = terminalArguments.split("\n").map((argument) => argument.trim()).filter(Boolean);
+    try {
+      const response = await api<{ session?: TerminalSession; approval?: Approval }>("/terminal-sessions", { method: "POST", body: JSON.stringify({ projectId: active.id, taskId: terminalTaskId, executable: terminalExecutable, args, workingDirectory: ".", mode: "supervised" }) });
+      setStatus(response.approval ? "Terminal command queued for approval." : "Terminal session started.");
+      await load();
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not start terminal session"); }
+  };
+  const stopTerminal = async (session: TerminalSession) => {
+    try { await api<{ ok: boolean }>(`/terminal-sessions/${session.id}/stop`, { method: "POST" }); setStatus("Terminal session stopped."); await load(); }
+    catch (error) { setStatus(error instanceof Error ? error.message : "Could not stop terminal session"); }
+  };
+  const hasRunningTerminal = terminalSessions.some((session) => session.status === "running");
+  useEffect(() => {
+    if (!active || !hasRunningTerminal) return;
+    const timer = setInterval(() => { void api<{ sessions: TerminalSession[] }>(`/projects/${active.id}/terminal-sessions`).then((data) => setTerminalSessions(data.sessions)).catch((error: Error) => setStatus(error.message)); }, 1000);
+    return () => clearInterval(timer);
+  }, [active?.id, hasRunningTerminal]);
+  const refreshGitStatus = async () => {
+    if (!active) return;
+    try {
+      const [statusData, diffData] = await Promise.all([
+        api<{ git: GitStatus }>(`/projects/${active.id}/git/status`),
+        api<{ diff: GitDiffSummary }>(`/projects/${active.id}/git/diff-summary`)
+      ]);
+      setGitStatus(statusData.git); setGitDiff(diffData.diff); setGitError("");
+    } catch (error) { setGitStatus(undefined); setGitError(error instanceof Error ? error.message : "Could not inspect Git status"); }
+  };
+  useEffect(() => { void refreshGitStatus().catch((error: Error) => setStatus(error.message)); }, [active?.id]);
+  const saveMemory = async () => {
+    if (!active || !memoryContent.trim()) return;
+    try {
+      const editing = memories.find((memory) => memory.id === editingMemoryId);
+      if (editing) {
+        await api(`/projects/${active.id}/memory/${editing.id}`, { method: "PUT", body: JSON.stringify({ kind: memoryKind, content: memoryContent }) });
+        setEditingMemoryId(undefined);
+      } else {
+        await api(`/projects/${active.id}/memory`, { method: "POST", body: JSON.stringify({ kind: memoryKind, content: memoryContent }) });
+      }
+      setMemoryContent("");
+      setMemories((await api<{ memories: MemoryNote[] }>(`/projects/${active.id}/memory`)).memories);
+      setStatus("Project memory saved.");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not save project memory"); }
+  };
+  const editMemory = (memory: MemoryNote) => { setEditingMemoryId(memory.id); setMemoryKind(memory.kind); setMemoryContent(memory.content); };
+  const deleteMemory = async (memory: MemoryNote) => {
+    if (!active) return;
+    try { await api(`/projects/${active.id}/memory/${memory.id}`, { method: "DELETE" }); setMemories((current) => current.filter((item) => item.id !== memory.id)); setStatus("Project memory deleted."); }
+    catch (error) { setStatus(error instanceof Error ? error.message : "Could not delete project memory"); }
+  };
+  const saveTodo = async () => {
+    if (!active || !todoTitle.trim()) return;
+    const existing = todos.find((todo) => todo.id === editingTodoId);
+    const payload = { title: todoTitle, description: todoDescription, priority: todoPriority, acceptanceCriteria: todoCriteria.split("\n").map((criterion) => criterion.trim()).filter(Boolean), status: existing?.status ?? "open" };
+    try {
+      if (existing) await api(`/projects/${active.id}/todos/${existing.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      else await api(`/projects/${active.id}/todos`, { method: "POST", body: JSON.stringify(payload) });
+      setTodoTitle(""); setTodoDescription(""); setTodoPriority(0); setTodoCriteria(""); setEditingTodoId(undefined);
+      setTodos((await api<{ todos: ManualTodo[] }>(`/projects/${active.id}/todos`)).todos);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not save TODO"); }
+  };
+  const editTodo = (todo: ManualTodo) => { setEditingTodoId(todo.id); setTodoTitle(todo.title); setTodoDescription(todo.description); setTodoPriority(todo.priority); setTodoCriteria(todo.acceptanceCriteria.join("\n")); };
+  const updateTodoStatus = async (todo: ManualTodo) => {
+    if (!active) return;
+    try {
+      await api(`/projects/${active.id}/todos/${todo.id}`, { method: "PUT", body: JSON.stringify({ title: todo.title, description: todo.description, priority: todo.priority, acceptanceCriteria: todo.acceptanceCriteria, status: todo.status === "open" ? "completed" : "open" }) });
+      setTodos((await api<{ todos: ManualTodo[] }>(`/projects/${active.id}/todos`)).todos);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not update TODO"); }
+  };
+  const deleteTodo = async (todo: ManualTodo) => {
+    if (!active) return;
+    try { await api(`/projects/${active.id}/todos/${todo.id}`, { method: "DELETE" }); setTodos((current) => current.filter((item) => item.id !== todo.id)); }
+    catch (error) { setStatus(error instanceof Error ? error.message : "Could not delete TODO"); }
+  };
+  const generatePlan = async () => {
+    if (!active || !message.trim()) return;
+    setPlanning(true); setStatus("Generating a task plan…");
+    try {
+      const data = await api<{ plan: { summary: string; tasks: Task[] } }>(`/projects/${active.id}/plan`, { method: "POST", body: JSON.stringify({ description: message.trim(), providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      setPlanSummary(data.plan.summary);
+      setTasks((current) => [...data.plan.tasks, ...current]);
+      setMessage("");
+      setStatus(`Plan created with ${data.plan.tasks.length} tasks. Review the dependency queue before running them.`);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not generate task plan"); }
+    finally { setPlanning(false); }
+  };
+  return (
+    <div className="shell">
+      <aside>
+        <div className="brand"><span>PR</span><div>Project PR-0<small>local agent workspace</small></div></div>
+        <button className="project-button" onClick={() => void createProject()}>+ New project</button>
+        <section><p>PROJECTS</p>{projects.map((project) => <button className={active?.id === project.id ? "nav selected" : "nav"} key={project.id} onClick={() => void load(project)}>{project.name}</button>)}</section>
+        <section><p>CONVERSATIONS</p>{conversations.map((conversation, index) => <button className={activeConversationId === conversation.id ? "nav selected" : "nav"} key={conversation.id} onClick={() => void openConversation(conversation.id)}>Conversation {conversations.length - index}</button>)}</section>
+        <section>
+          <p>FILES</p>
+          <div className="file-tools">
+            <button disabled={explorerPath === "."} onClick={() => { const parent = explorerPath.split("/").slice(0, -1).join("/") || "."; void loadWorkspaceDirectory(parent); }}>Up</button>
+            <small>{explorerPath}</small>
+            <input aria-label="Search workspace files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchWorkspace(); }} placeholder="Search files" />
+            <button disabled={!fileSearch.trim()} onClick={() => void searchWorkspace()}>Search</button>
+          </div>
+          {searchMatches.length ? searchMatches.map((match) => <button className="nav" key={`${match.path}:${match.line}`} onClick={() => void openWorkspaceFile(match.path)}>{match.path}:{match.line}</button>) : fileEntries.map((entry) => <button className="nav" key={entry.path} disabled={entry.type === "symlink"} onClick={() => entry.type === "directory" ? void loadWorkspaceDirectory(entry.path) : entry.type === "file" ? void openWorkspaceFile(entry.path) : undefined}>{entry.type === "directory" ? "▸ " : entry.type === "file" ? "· " : ""}{entry.name}</button>)}
+        </section>
+        <section><p>APPROVALS</p>{approvals.length ? approvals.map((approval) => <div className="approval-item" key={approval.id}><b>{approval.action}</b><small>{approval.operationKind ?? "operation"} · {approval.risk}</small><div className="approval-actions"><button onClick={() => void decideApproval(approval, true)}>Approve</button><button onClick={() => void decideApproval(approval, false)}>Reject</button></div></div>) : <div className="empty compact">No pending approvals.</div>}</section>
+        <section>
+          <p>GIT</p>
+          <button className="nav" disabled={!active} onClick={() => void refreshGitStatus()}>Refresh status</button>
+          {gitError && <small>{gitError}</small>}
+          {gitStatus && <><small>{gitStatus.branch}</small>{gitStatus.changes.map((change) => <div className="task" key={change.path}><small>{change.status}</small><span>{change.path}</span></div>)}</>}{gitDiff?.files.map((file) => <div className="task" key={`${file.path}:${file.staged}`}><small>{file.staged ? "staged" : "working"} · +{file.added ?? "binary"} -{file.deleted ?? "binary"}</small><span>{file.path}</span></div>)}
+        </section>
+        {usage && <section><p>MODEL USAGE</p><small>{usage.requests} requests · {usage.inputTokens} input / {usage.outputTokens} output tokens</small><small>Estimated cost: ${usage.estimatedCostUsd.toFixed(4)} USD</small>{usage.unknownCostRequests > 0 && <small>{usage.unknownCostRequests} requests with unknown cost</small>}</section>}
+        <section>
+          <p>PROJECT MEMORY</p>
+          <select aria-label="Memory type" value={memoryKind} onChange={(event) => setMemoryKind(event.target.value as MemoryNote["kind"])}><option value="fact">Fact</option><option value="decision">Decision</option><option value="outcome">Outcome</option></select>
+          <textarea aria-label="Project memory content" value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} placeholder="Record a verified project note" />
+          <button className="nav" disabled={!memoryContent.trim()} onClick={() => void saveMemory()}>{editingMemoryId ? "Save note" : "Add note"}</button>
+          {editingMemoryId && <button className="nav" onClick={() => { setEditingMemoryId(undefined); setMemoryContent(""); }}>Cancel edit</button>}
+          {memories.map((memory) => <div className="memory-item" key={memory.id}><small>{memory.kind}</small><p>{memory.content}</p><div className="approval-actions"><button onClick={() => editMemory(memory)}>Edit</button><button onClick={() => void deleteMemory(memory)}>Delete</button></div></div>)}
+        </section>
+        <section>
+          <p>TODO</p>
+          <div className="todo-tools">
+            <input aria-label="TODO title" value={todoTitle} onChange={(event) => setTodoTitle(event.target.value)} placeholder="TODO title" />
+            <input aria-label="TODO description" value={todoDescription} onChange={(event) => setTodoDescription(event.target.value)} placeholder="TODO description" />
+            <input aria-label="TODO priority" type="number" min="0" max="100" value={todoPriority} onChange={(event) => setTodoPriority(Number(event.target.value))} />
+            <textarea aria-label="TODO criteria" value={todoCriteria} onChange={(event) => setTodoCriteria(event.target.value)} placeholder="TODO criteria" />
+            <button disabled={!todoTitle.trim()} onClick={() => void saveTodo()}>{editingTodoId ? "Save TODO" : "Add TODO"}</button>
+            {editingTodoId && <button className="nav" onClick={() => { setEditingTodoId(undefined); setTodoTitle(""); setTodoDescription(""); setTodoPriority(0); setTodoCriteria(""); }}>Cancel edit</button>}
+          </div>
+          {todos.map((todo) => <div className="todo-item" key={todo.id}><div><b>{todo.title}</b><small>{todo.description} · priority {todo.priority} · {todo.status}</small>{todo.acceptanceCriteria.map((criterion) => <small key={criterion}>- {criterion}</small>)}</div><div className="approval-actions"><button onClick={() => editTodo(todo)}>Edit</button><button onClick={() => void updateTodoStatus(todo)}>{todo.status === "open" ? "Complete" : "Reopen"}</button><button onClick={() => void deleteTodo(todo)}>Delete</button></div></div>)}
+        </section>
+        <div className="connection">● {status}</div>
+      </aside>
+      <main>
+        <header><div><p className="eyebrow">ACTIVE PROJECT</p><h1>{active?.name ?? "No project selected"}</h1></div><div className="badge">Supervised mode</div></header>
+        <div className="grid">
+          <section className="chat card">
+            <div className="card-head"><h2>Orchestrator</h2><span>{providerId} / {modelId || "select model"}</span></div>
+            <div className="conversation">
+              {filePreview && <article className="assistant"><b>{filePreview.path}</b><pre>{filePreview.content}</pre></article>}
+              {messages.length ? messages.map((item) => <article className="assistant" key={item.id}><b>{item.role === "user" ? "You" : "Agent"}</b><p>{item.content}</p></article>) : result ? <article className="assistant"><b>Execution report</b><p>{result}</p></article> : <div className="empty">Describe a development task to create a persisted, runnable task.</div>}
+            </div>
+            <div className="composer">
+              <div className="provider-controls">
+                <select aria-label="Task prerequisite" value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}><option value="">No prerequisite</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title} ({task.status})</option>)}</select>
+                <select aria-label="Agent role" value={agentRole} onChange={(event) => setAgentRole(event.target.value)}>{["orchestrator", "architect", "frontend", "backend", "debugger", "reviewer", "qa", "researcher", "documentation"].map((role) => <option key={role} value={role}>{role}</option>)}</select>
+                <select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock (no cost)" : provider.id === "ollama" ? "Ollama (local)" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id}>{id} (configure server credentials)</option>)}</select>
+                {providerId !== "mock" && <input aria-label="Model id" placeholder="Model id (or server default)" value={modelId} onChange={(event) => setModelId(event.target.value)} />}
+              </div>
+              <div className="compose-row"><textarea aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="What should the team build or change?" /><button onClick={() => void send()} disabled={!active || !message.trim()}>Send ↵</button></div>
+            </div>
+          </section>
+          <section className="activity card">
+            <div className="card-head"><h2>Agent activity</h2><span className="live">● live</span></div>
+            <div className="agent"><div className="avatar">O</div><div><b>Orchestrator</b><small>Routes plans and verifies completion</small></div><span>{runningTaskId ? "running" : "idle"}</span></div>
+            <h3>Execution queue</h3>
+            {tasks.length ? tasks.map((task) => <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}</small></div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>) : <div className="empty compact">No execution tasks yet.</div>}
+          </section>
+        </div>
+        <section className="bottom card">
+          <div className="card-head"><h2>Terminal & verification</h2><span>Approved local processes</span></div>
+          <div className="terminal-controls">
+            <select aria-label="Task for terminal session" value={terminalTaskId} onChange={(event) => setTerminalTaskId(event.target.value)}><option value="">Select task</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}</select>
+            <select aria-label="Terminal executable" value={terminalExecutable} onChange={(event) => setTerminalExecutable(event.target.value)}>{["node", "npm", "npx", "git"].map((executable) => <option key={executable} value={executable}>{executable}</option>)}</select>
+            <textarea aria-label="Terminal arguments" value={terminalArguments} onChange={(event) => setTerminalArguments(event.target.value)} placeholder="One argument per line" />
+            <button disabled={!active || !terminalTaskId} onClick={() => void startTerminal()}>Request command</button>
+          </div>
+          {terminalSessions.map((session) => <div className="terminal-session" key={session.id}><div><b>{session.executable} {session.args.join(" ")}</b><span>{session.status}{session.exitCode === null ? "" : ` · exit ${session.exitCode}`}</span>{session.status === "running" && <button onClick={() => void stopTerminal(session)}>Stop</button>}</div><pre>{session.output || "Waiting for output…"}</pre></div>)}
+        </section>
+      </main>
+    </div>
+  );
 }
-createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("Root element was not found");
+const root = (import.meta.hot?.data.root as Root | undefined) ?? createRoot(rootElement);
+if (import.meta.hot) import.meta.hot.data.root = root;
+root.render(<StrictMode><App /></StrictMode>);
