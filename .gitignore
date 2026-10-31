@@ -1,11 +1,11 @@
 node_modules/
 dist/
+data/
 .env
 .env.*
 !/.env.example
 *.db
 *.db-*
-apps/server/data/
 coverage/
 playwright-report/
 IMPLEMENTATION_PLAN.md
