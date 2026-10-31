@@ -1,6 +1,6 @@
-\<div align="center">
+<div align="center">
 
-# ⚡ Project Chimera
+# ⚡ PR-0
 
 ### One Workspace. Multiple AIs. Limitless Possibilities.
 
@@ -8,29 +8,23 @@
 
 Connect different AI models, delegate complex tasks, interact with your development environment, and orchestrate entire workflows from a unified workspace.
 
-\<br>
-
-
-\
-
-
-\<br>
+<br>
 
 **Built for developers who want more than a chat window.**
 
-\</div>
+</div>
 
 ---
 
-## 🧠 What Is Project Chimera?
+## 🧠 What Is PR-0?
 
 AI-powered development is evolving rapidly, but developers often have to switch between multiple tools to get their work done.
 
 One model might excel at designing beautiful interfaces. Another might be better suited for debugging, architectural reasoning, or backend development. Meanwhile, the actual work still requires access to files, terminals, browsers, documentation, and development tools.
 
-**Project Chimera aims to bring these capabilities together into one extensible AI development environment.**
+**PR-0 aims to bring these capabilities together into one extensible AI development environment.**
 
-Instead of treating AI as a chatbot that merely generates code, Chimera is designed around an agentic workflow:
+Instead of treating AI as a chatbot that merely generates code, PR-0 is designed around an agentic workflow:
 
 1. Understand the user's objective.
 2. Break complex requests into manageable tasks.
@@ -39,7 +33,7 @@ Instead of treating AI as a chatbot that merely generates code, Chimera is desig
 5. Execute commands and validate the results.
 6. Track progress and report what was accomplished.
 
-The long-term goal is to create a development agent that can collaborate with the developer throughout the software development lifecycle.
+The long-term goal is to create a development agent that can collaborate with developers throughout the software development lifecycle.
 
 ## ✨ Planned Features
 
@@ -51,7 +45,7 @@ Use multiple AI providers through a unified interface.
 - **Specialized agents:** Delegate frontend, backend, debugging, research, and testing tasks to suitable models.
 - **Provider abstraction:** Keep model integrations modular instead of tying the application to one provider.
 - **Configurable workflows:** Allow developers to choose models and customize agent behavior.
-- **Fallback strategies:** Design workflows that can respond gracefully to provider failures or unavailable models.
+- **Fallback strategies:** Respond gracefully to provider failures or unavailable models.
 
 The objective is not simply to connect multiple models, but to use them where they are most useful.
 
@@ -104,24 +98,24 @@ Browser access is intended to be a tool available to the agent, not an unrestric
 
 Different development tasks require different strengths.
 
-Chimera is designed to support specialized workflows such as:
+PR-0 is designed to support specialized workflows such as:
 
-| Agent           | Primary Responsibility                                                   |
-| --------------- | ------------------------------------------------------------------------ |
-| Frontend Agent  | UI implementation, layouts, components, styling, and responsive design   |
-| Backend Agent   | APIs, business logic, database integration, and server-side architecture |
-| Debugging Agent | Error analysis, root-cause investigation, and fixes                      |
-| Research Agent  | Documentation lookup, technical research, and solution comparison        |
-| Testing Agent   | Test generation, test execution, and failure analysis                    |
-| Planning Agent  | Task decomposition, implementation strategy, and progress tracking       |
+| Agent | Primary Responsibility |
+|---|---|
+| Frontend Agent | UI implementation, layouts, components, styling, and responsive design |
+| Backend Agent | APIs, business logic, database integration, and server-side architecture |
+| Debugging Agent | Error analysis, root-cause investigation, and fixes |
+| Research Agent | Documentation lookup, technical research, and solution comparison |
+| Testing Agent | Test generation, test execution, and failure analysis |
+| Planning Agent | Task decomposition, implementation strategy, and progress tracking |
 
-These roles are conceptual starting points. Their actual implementation and model assignments will depend on the project's development progress and configuration.
+These roles are conceptual starting points. Their actual implementation and model assignments will depend on development progress and configuration.
 
 ### 📋 Task Planning & Progress Tracking
 
 Complex development work should be organized rather than handled as one enormous prompt.
 
-Chimera aims to support:
+PR-0 aims to support:
 
 - Task decomposition.
 - Persistent TODO lists.
@@ -145,7 +139,7 @@ Potential integrations include:
 - Anthropic Claude models.
 - Local models through compatible inference servers such as Ollama.
 
-Provider availability will depend on implementation status, API compatibility, account permissions, and the configuration supplied by the developer.
+Provider availability will depend on implementation status, API compatibility, account permissions, and configuration.
 
 Where supported, credentials should be provided through environment variables or a secure credential mechanism rather than hardcoded into source code.
 
@@ -167,11 +161,11 @@ The intended experience is a workspace where developers can supervise AI-assiste
 
 ## 🏗️ Proposed Architecture
 
-Chimera is intended to use a modular architecture that separates the user interface, orchestration logic, AI providers, and tools.
+PR-0 is intended to use a modular architecture that separates the user interface, orchestration logic, AI providers, and tools.
 
 ```text
 ┌─────────────────────────────────────────────┐
-│             Chimera Workspace               │
+│                PR-0 Workspace               │
 │                                             │
 │   Chat │ Files │ Terminal │ Tasks │ Logs    │
 └──────────────────────┬──────────────────────┘
@@ -214,16 +208,16 @@ Chimera is intended to use a modular architecture that separates the user interf
 
 ### Proposed Technology Stack
 
-| Component           | Proposed Technology                     |
-| ------------------- | --------------------------------------- |
-| Frontend            | React, Vite, TypeScript                 |
-| Backend             | Node.js, Fastify, TypeScript            |
-| Data Persistence    | SQLite with Drizzle ORM                 |
-| AI Integration      | Provider-specific SDKs and API adapters |
-| Browser Automation  | Playwright                              |
-| Local Model Support | Ollama-compatible endpoints             |
-| Testing             | Automated unit and integration tests    |
-| Development Tools   | Git, Node.js, npm                       |
+| Component | Proposed Technology |
+|---|---|
+| Frontend | React, Vite, TypeScript |
+| Backend | Node.js, Fastify, TypeScript |
+| Data Persistence | SQLite with Drizzle ORM |
+| AI Integration | Provider-specific SDKs and API adapters |
+| Browser Automation | Playwright |
+| Local Model Support | Ollama-compatible endpoints |
+| Testing | Automated unit and integration tests |
+| Development Tools | Git, Node.js, npm |
 
 Technology choices may evolve as the project develops.
 
@@ -231,7 +225,7 @@ Technology choices may evolve as the project develops.
 
 ## 🔄 How It Is Intended to Work
 
-Imagine asking Chimera:
+Imagine asking PR-0:
 
 > Build a modern dashboard for my application, connect it to my backend API, fix any build errors, and run the tests.
 
@@ -269,7 +263,7 @@ This is an example of the intended workflow; actual behavior will depend on the 
 
 Giving an AI agent access to development tools creates responsibilities that ordinary chat applications do not have.
 
-Chimera is intended to follow these principles:
+PR-0 is intended to follow these principles:
 
 - **Least privilege:** Grant tools only the permissions they need.
 - **Explicit approvals:** Require confirmation for sensitive or destructive actions.
@@ -287,7 +281,7 @@ These are design goals. The security of the eventual implementation will depend 
 
 ## 🚀 Getting Started
 
-Project Chimera is under development. Installation and execution instructions will be finalized as the initial implementation becomes available.
+PR-0 is under development. Installation and execution instructions will be finalized as the initial implementation becomes available.
 
 ### Prerequisites
 
@@ -301,7 +295,7 @@ The proposed development environment includes:
 
 ### Clone the Repository
 
-Replace the placeholder below with the actual repository URL:
+Replace the placeholders below with your actual GitHub repository details.
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
@@ -352,55 +346,55 @@ Development commands will be documented here once the application scripts have b
 
 The project will be developed incrementally.
 
-- [ ] **Phase 1 — Foundation**
+### Phase 1 — Foundation
 
-  - [ ] Establish the repository structure.
-  - [ ] Implement the initial frontend and backend.
-  - [ ] Add application configuration and persistent storage.
-  - [ ] Establish basic error handling and logging.
+- [ ] Establish the repository structure.
+- [ ] Implement the initial frontend and backend.
+- [ ] Add application configuration and persistent storage.
+- [ ] Establish basic error handling and logging.
 
-- [ ] **Phase 2 — AI Integration**
+### Phase 2 — AI Integration
 
-  - [ ] Implement a common provider interface.
-  - [ ] Integrate the first AI provider.
-  - [ ] Add support for additional providers.
-  - [ ] Implement model selection and routing.
+- [ ] Implement a common provider interface.
+- [ ] Integrate the first AI provider.
+- [ ] Add support for additional providers.
+- [ ] Implement model selection and routing.
 
-- [ ] **Phase 3 — Agent Orchestration**
+### Phase 3 — Agent Orchestration
 
-  - [ ] Implement planning and task decomposition.
-  - [ ] Add task state management.
-  - [ ] Implement tool selection and controlled execution.
-  - [ ] Add execution limits and failure handling.
+- [ ] Implement planning and task decomposition.
+- [ ] Add task state management.
+- [ ] Implement tool selection and controlled execution.
+- [ ] Add execution limits and failure handling.
 
-- [ ] **Phase 4 — Developer Tools**
+### Phase 4 — Developer Tools
 
-  - [ ] Add filesystem operations.
-  - [ ] Add controlled terminal sessions.
-  - [ ] Implement project exploration.
-  - [ ] Add TODO tracking and execution history.
+- [ ] Add filesystem operations.
+- [ ] Add controlled terminal sessions.
+- [ ] Implement project exploration.
+- [ ] Add TODO tracking and execution history.
 
-- [ ] **Phase 5 — Browser & Research**
+### Phase 5 — Browser & Research
 
-  - [ ] Add web content retrieval.
-  - [ ] Integrate browser automation.
-  - [ ] Add documentation research workflows.
-  - [ ] Introduce safeguards for untrusted web content.
+- [ ] Add web content retrieval.
+- [ ] Integrate browser automation.
+- [ ] Add documentation research workflows.
+- [ ] Introduce safeguards for untrusted web content.
 
-- [ ] **Phase 6 — Multi-Agent Workflows**
+### Phase 6 — Multi-Agent Workflows
 
-  - [ ] Implement specialized agent roles.
-  - [ ] Add task delegation between agents.
-  - [ ] Coordinate shared project changes.
-  - [ ] Introduce validation and review workflows.
+- [ ] Implement specialized agent roles.
+- [ ] Add task delegation between agents.
+- [ ] Coordinate shared project changes.
+- [ ] Introduce validation and review workflows.
 
-- [ ] **Phase 7 — Reliability & Release**
+### Phase 7 — Reliability & Release
 
-  - [ ] Expand automated testing.
-  - [ ] Improve error recovery.
-  - [ ] Audit security-sensitive operations.
-  - [ ] Document installation and configuration.
-  - [ ] Prepare a stable release.
+- [ ] Expand automated testing.
+- [ ] Improve error recovery.
+- [ ] Audit security-sensitive operations.
+- [ ] Document installation and configuration.
+- [ ] Prepare a stable release.
 
 *Roadmap items are planned features and may change as development progresses.*
 
@@ -408,17 +402,17 @@ The project will be developed incrementally.
 
 ## 🎯 Project Goals
 
-Project Chimera is being designed around a few core ideas:
+PR-0 is being designed around a few core ideas:
 
-**Model independence** — The developer should not be locked into a single AI provider.
+**Model independence** — Developers should not be locked into a single AI provider.
 
 **Task-oriented intelligence** — AI should be able to plan and execute structured workflows, not just produce isolated responses.
 
-**Developer control** — The user should remain in control of permissions, sensitive actions, and important changes.
+**Developer control** — Users should remain in control of permissions, sensitive actions, and important changes.
 
 **Modularity** — Models, tools, agents, and application components should be replaceable without redesigning the entire system.
 
-**Practical automation** — The focus is on useful development work: understanding projects, editing files, running tests, researching solutions, and resolving problems.
+**Practical automation** — Focus on useful development work: understanding projects, editing files, running tests, researching solutions, and resolving problems.
 
 **Transparency** — Users should be able to inspect what the agent is doing and understand the results.
 
@@ -445,13 +439,13 @@ Contribution guidelines will be added as the project matures.
 
 ## 🛣️ Future Vision
 
-The long-term ambition is to evolve Chimera into a flexible AI workspace where developers can combine different models, tools, and specialized agents to accomplish complex tasks.
+The long-term ambition is to evolve PR-0 into a flexible AI workspace where developers can combine different models, tools, and specialized agents to accomplish complex tasks.
 
 Rather than building yet another interface that sends prompts to an AI model, the project explores a different question:
 
 **What if your AI assistant could coordinate the tools and models you already have, understand your project, and help carry a task from planning through implementation and verification?**
 
-That is the direction Project Chimera aims to explore.
+That is the direction PR-0 aims to explore.
 
 ---
 
@@ -463,12 +457,12 @@ A license should be selected and added to the repository before distributing the
 
 ---
 
-\<div align="center">
+<div align="center">
 
-### ⚡ Project Chimera
+### ⚡ PR-0
 
 **One goal. Multiple models. A smarter way to build.**
 
 *Currently under development.*
 
-\</div>
+</div>
