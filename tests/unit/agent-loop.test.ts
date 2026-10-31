@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentExecutor } from "@pr-0/agent-core";
 import type { AgentTask } from "@pr-0/shared";
-import type { ModelAdapter, ModelRequest, ModelResponse } from "@pr-0/model-gateway";
+import type { ModelAdapter, ModelRequest, ModelRequestOptions, ModelResponse } from "@pr-0/model-gateway";
 
 class ScriptedModel implements ModelAdapter {
   readonly providerId = "test";
@@ -35,5 +35,28 @@ describe("agent tool loop", () => {
     const task: AgentTask = { id: "task-2", projectId: "project-1", title: "Run", description: "Run a command", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
     const result = await new AgentExecutor(model).execute(task, { systemPrompt: "", tools: [] });
     expect(result.status).toBe("blocked"); expect(result.blockers[0]).toContain("not available");
+  });
+
+  it("passes cancellation to the provider and stops before dispatching tools", async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const model: ModelAdapter = {
+      providerId: "abortable-test",
+      getCapabilities: () => ({ streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }),
+      generate: async (_request: ModelRequest, options?: ModelRequestOptions) => {
+        markStarted();
+        return new Promise<ModelResponse>((_resolve, reject) => {
+          if (options?.signal?.aborted) { reject(options.signal.reason); return; }
+          options?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+        });
+      }
+    };
+    const task: AgentTask = { id: "task-cancel", projectId: "project-1", title: "Cancel", description: "Cancel this task", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
+    const controller = new AbortController(); let toolCalls = 0;
+    const execution = new AgentExecutor(model).execute(task, { systemPrompt: "", signal: controller.signal, tools: [{ name: "example", description: "test", parameters: {}, inputSchema: { parse: (value) => value } }], executeTool: async () => { toolCalls++; return "unexpected"; } });
+    await started;
+    controller.abort(new Error("cancelled"));
+    await expect(execution).rejects.toThrow("cancelled");
+    expect(toolCalls).toBe(0);
   });
 });

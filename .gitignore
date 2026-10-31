@@ -3,8 +3,9 @@ dist/
 .env
 .env.*
 !/.env.example
-data/*.db
-data/*.db-*
+*.db
+*.db-*
+apps/server/data/
 coverage/
 playwright-report/
 IMPLEMENTATION_PLAN.md

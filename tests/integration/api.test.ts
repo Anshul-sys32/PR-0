@@ -5,9 +5,24 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createApp } from "../../apps/server/src/app.js";
 import type { FastifyInstance } from "fastify";
+import type { ModelAdapter, ModelRequest, ModelRequestOptions, ModelResponse } from "@pr-0/model-gateway";
+
+class AbortableTestAdapter implements ModelAdapter {
+  readonly providerId = "ollama";
+  private markStarted!: () => void;
+  readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
+  getCapabilities() { return { streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }; }
+  async generate(_request: ModelRequest, options?: ModelRequestOptions): Promise<ModelResponse> {
+    this.markStarted();
+    return new Promise<ModelResponse>((_resolve, reject) => {
+      if (options?.signal?.aborted) { reject(options.signal.reason); return; }
+      options?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+    });
+  }
+}
 
 let app: FastifyInstance; let directory: string;
-beforeAll(async () => { directory = mkdtempSync(join(tmpdir(), "pr0-test-")); app = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "test.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000 }); });
+beforeAll(async () => { directory = mkdtempSync(join(tmpdir(), "pr0-test-")); app = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "test.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000 }, undefined, [new AbortableTestAdapter()]); });
 afterAll(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
 describe("local workflow", () => {
   it("persists and runs a mock task", async () => {
@@ -47,5 +62,24 @@ describe("local workflow", () => {
     const run = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/run` });
     expect(run.statusCode).toBe(200); expect(run.json().result.status).toBe("completed");
     expect((await app.inject(`/api/projects/${project.id}/tasks`)).json().tasks[0].status).toBe("completed");
+  });
+
+  it("aborts an active provider request and keeps the task cancelled", async () => {
+    const adapter = new AbortableTestAdapter();
+    const cancellableApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "cancel.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000 }, undefined, [adapter]);
+    try {
+      const project = (await cancellableApp.inject({ method: "POST", url: "/api/projects", payload: { name: "cancel-test", rootPath: directory } })).json().project;
+      const conversation = (await cancellableApp.inject({ method: "POST", url: "/api/conversations", payload: { projectId: project.id } })).json().conversation;
+      const task = (await cancellableApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Wait for cancellation" } })).json().task;
+      const run = cancellableApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      await adapter.started;
+      const cancellation = await cancellableApp.inject({ method: "POST", url: `/api/tasks/${task.id}/cancel` });
+      expect(cancellation.statusCode).toBe(200);
+      expect((await run).json()).toMatchObject({ cancelled: true, taskId: task.id });
+      const persistedTask = (await cancellableApp.inject(`/api/projects/${project.id}/tasks`)).json().tasks.find((value: { id: string }) => value.id === task.id);
+      expect(persistedTask.status).toBe("cancelled");
+    } finally {
+      await cancellableApp.close();
+    }
   });
 });
