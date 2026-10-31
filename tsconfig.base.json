@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "baseUrl": ".",
+    "paths": {
+      "@pr-0/shared": ["packages/shared/src/index.ts"],
+      "@pr-0/model-gateway": ["packages/model-gateway/src/index.ts"],
+      "@pr-0/tool-runtime": ["packages/tool-runtime/src/index.ts"],
+      "@pr-0/agent-core": ["packages/agent-core/src/index.ts"]
+    },
+    "outDir": "dist",
+    "resolveJsonModule": true
+  }
+}

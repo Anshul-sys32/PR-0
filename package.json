@@ -1,0 +1,24 @@
+{
+  "name": "project-pr-0",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @pr-0/server\" \"npm run dev -w @pr-0/web\"",
+    "build": "npm run build -w @pr-0/shared && npm run build -w @pr-0/model-gateway && npm run build -w @pr-0/tool-runtime && npm run build -w @pr-0/agent-core && npm run build -w @pr-0/server && npm run build -w @pr-0/web",
+    "typecheck": "npm run typecheck -w @pr-0/shared && npm run typecheck -w @pr-0/model-gateway && npm run typecheck -w @pr-0/tool-runtime && npm run typecheck -w @pr-0/agent-core && npm run typecheck -w @pr-0/server && npm run typecheck -w @pr-0/web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:init": "npm run db:init -w @pr-0/server"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.5"
+  }
+}

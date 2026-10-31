@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+!/.env.example
+data/*.db
+data/*.db-*
+coverage/
+playwright-report/
+IMPLEMENTATION_PLAN.md
+prompt.md
