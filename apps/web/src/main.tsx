@@ -17,6 +17,10 @@ type Approval = { id: string; taskId: string; action: string; risk: string; oper
 type TerminalSession = { id: string; projectId: string; taskId: string; workingDirectory: string; executable: string; args: string[]; status: "running" | "exited" | "failed" | "stopped"; output: string; exitCode: number | null };
 type GitStatus = { branch: string; changes: Array<{ status: string; path: string }> };
 type GitDiffSummary = { files: Array<{ path: string; added: number | null; deleted: number | null; staged: boolean }>; truncated: boolean };
+type GitPatch = { patch: string; files: string[]; truncated: boolean };
+type GitCommit = { hash: string; shortHash: string; authoredAt: string; author: string; subject: string };
+type GitCheckpoint = { id: string; shortHash: string; createdAt: string; subject: string };
+type GitRollbackPreview = { checkpointId: string; checkpointHead: string; currentHead: string; branch: string; commits: GitCommit[]; files: string[]; truncated: boolean };
 type MemoryNote = { id: string; projectId: string; kind: "fact" | "decision" | "outcome"; content: string; createdAt: string; updatedAt: string };
 type UsageSummary = { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; unknownCostRequests: number };
 type ManualTodo = { id: string; projectId: string; title: string; description: string; priority: number; acceptanceCriteria: string[]; status: "open" | "completed"; createdAt: string; updatedAt: string };
@@ -42,6 +46,12 @@ function App() {
   const [gitStatus, setGitStatus] = useState<GitStatus>();
   const [gitDiff, setGitDiff] = useState<GitDiffSummary>();
   const [gitError, setGitError] = useState("");
+  const [gitPatch, setGitPatch] = useState<{ staged: GitPatch; unstaged: GitPatch }>();
+  const [gitPatchView, setGitPatchView] = useState<"unstaged" | "staged">("unstaged");
+  const [gitHistory, setGitHistory] = useState<GitCommit[]>([]);
+  const [gitHistoryTruncated, setGitHistoryTruncated] = useState(false);
+  const [gitCheckpoints, setGitCheckpoints] = useState<GitCheckpoint[]>([]);
+  const [rollbackPreview, setRollbackPreview] = useState<GitRollbackPreview | null>(null);
   const [memories, setMemories] = useState<MemoryNote[]>([]);
   const [memoryKind, setMemoryKind] = useState<MemoryNote["kind"]>("fact");
   const [memoryContent, setMemoryContent] = useState("");
@@ -244,12 +254,41 @@ function App() {
   const refreshGitStatus = async () => {
     if (!active) return;
     try {
-      const [statusData, diffData] = await Promise.all([
+      const [statusData, diffData, patchData, historyData, checkpointData] = await Promise.all([
         api<{ git: GitStatus }>(`/projects/${active.id}/git/status`),
-        api<{ diff: GitDiffSummary }>(`/projects/${active.id}/git/diff-summary`)
+        api<{ diff: GitDiffSummary }>(`/projects/${active.id}/git/diff-summary`),
+        api<{ staged: GitPatch; unstaged: GitPatch }>(`/projects/${active.id}/git/patch`),
+        api<{ history: { commits: GitCommit[]; truncated: boolean } }>(`/projects/${active.id}/git/history`),
+        api<{ checkpoints: { checkpoints: GitCheckpoint[] } }>(`/projects/${active.id}/git/checkpoints`)
       ]);
-      setGitStatus(statusData.git); setGitDiff(diffData.diff); setGitError("");
+      setGitStatus(statusData.git); setGitDiff(diffData.diff); setGitPatch(patchData); setGitHistory(historyData.history.commits); setGitHistoryTruncated(historyData.history.truncated); setGitCheckpoints(checkpointData.checkpoints.checkpoints); setGitError("");
     } catch (error) { setGitStatus(undefined); setGitError(error instanceof Error ? error.message : "Could not inspect Git status"); }
+  };
+  const createGitCheckpoint = async () => {
+    if (!active) return;
+    try {
+      const { checkpoint } = await api<{ checkpoint: { id: string } }>(`/projects/${active.id}/git/checkpoints`, { method: "POST" });
+      setStatus(`Checkpoint created: ${checkpoint.id}`);
+      await refreshGitStatus();
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create a clean Git checkpoint"); }
+  };
+  const previewGitRollback = async (checkpoint: GitCheckpoint) => {
+    if (!active) return;
+    try {
+      const data = await api<{ preview: GitRollbackPreview }>(`/projects/${active.id}/git/checkpoints/${checkpoint.id}/rollback-preview`);
+      setRollbackPreview(data.preview);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not preview checkpoint rollback"); }
+  };
+  const rollbackGitCheckpoint = async () => {
+    if (!active || !rollbackPreview) return;
+    const confirmed = window.confirm(`Reset ${rollbackPreview.branch} to checkpoint ${rollbackPreview.checkpointId}? This rewrites the branch tip. A backup tag will preserve the current HEAD.`);
+    if (!confirmed) return;
+    try {
+      const { rollback } = await api<{ rollback: { backupRef: string } }>(`/projects/${active.id}/git/checkpoints/${rollbackPreview.checkpointId}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, expectedHead: rollbackPreview.currentHead }) });
+      setRollbackPreview(null);
+      setStatus(`Rollback complete. Previous HEAD is preserved at ${rollback.backupRef}.`);
+      await refreshGitStatus();
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not roll back checkpoint"); }
   };
   useEffect(() => { void refreshGitStatus().catch((error: Error) => setStatus(error.message)); }, [active?.id]);
   const saveMemory = async () => {
@@ -351,6 +390,13 @@ function App() {
   const failedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "failed").length ?? 0;
   const blockedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "blocked").length ?? 0;
   const cancelledPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "cancelled").length ?? 0;
+  const tasksById = new Map(tasks.map((task) => [task.id, task]));
+  const dependentsByTaskId = new Map<string, string[]>();
+  for (const task of tasks) for (const dependencyId of task.dependencies ?? []) {
+    const dependents = dependentsByTaskId.get(dependencyId) ?? [];
+    dependents.push(task.title);
+    dependentsByTaskId.set(dependencyId, dependents);
+  }
   return (
     <div className="shell">
       <aside>
@@ -371,9 +417,13 @@ function App() {
         <section><p>APPROVALS</p>{approvals.length ? approvals.map((approval) => <div className="approval-item" key={approval.id}><b>{approval.action}</b><small>{approval.operationKind ?? "operation"} · {approval.risk}</small><div className="approval-actions"><button onClick={() => void decideApproval(approval, true)}>Approve</button><button onClick={() => void decideApproval(approval, false)}>Reject</button></div></div>) : <div className="empty compact">No pending approvals.</div>}</section>
         <section>
           <p>GIT</p>
-          <button className="nav" disabled={!active} onClick={() => void refreshGitStatus()}>Refresh status</button>
+          <div className="git-actions"><button className="nav" disabled={!active} onClick={() => void refreshGitStatus()}>Refresh status</button><button className="nav" disabled={!active} onClick={() => void createGitCheckpoint()}>Create checkpoint</button></div>
           {gitError && <small>{gitError}</small>}
           {gitStatus && <><small>{gitStatus.branch}</small>{gitStatus.changes.map((change) => <div className="task" key={change.path}><small>{change.status}</small><span>{change.path}</span></div>)}</>}{gitDiff?.files.map((file) => <div className="task" key={`${file.path}:${file.staged}`}><small>{file.staged ? "staged" : "working"} · +{file.added ?? "binary"} -{file.deleted ?? "binary"}</small><span>{file.path}</span></div>)}
+          {gitPatch && <details className="git-view"><summary>Patch viewer</summary><div className="git-actions"><button aria-pressed={gitPatchView === "unstaged"} onClick={() => setGitPatchView("unstaged")}>Working tree</button><button aria-pressed={gitPatchView === "staged"} onClick={() => setGitPatchView("staged")}>Staged</button></div><small>{gitPatch[gitPatchView].files.length} files{gitPatch[gitPatchView].truncated ? " · truncated" : ""}</small><pre className="git-patch">{gitPatch[gitPatchView].patch || "No patch available."}</pre></details>}
+          <details className="git-view"><summary>Commit history {gitHistoryTruncated ? "(latest 25)" : `(${gitHistory.length})`}</summary>{gitHistory.map((commit) => <div className="git-commit" key={commit.hash}><b>{commit.shortHash} · {commit.subject}</b><small>{commit.author} · {commit.authoredAt}</small></div>)}</details>
+          {gitCheckpoints.map((checkpoint) => <div className="git-checkpoint" key={checkpoint.id}><b>{checkpoint.shortHash}</b><small>{checkpoint.subject} · {checkpoint.createdAt}</small><button onClick={() => void previewGitRollback(checkpoint)}>Preview rollback</button></div>)}
+          {rollbackPreview && <div className="rollback-preview"><b>Rollback preview</b><small>Branch {rollbackPreview.branch} · {rollbackPreview.commits.length} commits · {rollbackPreview.files.length} changed files{rollbackPreview.truncated ? " · preview truncated" : ""}</small>{rollbackPreview.commits.slice(0, 5).map((commit) => <small key={commit.hash}>{commit.shortHash} · {commit.subject}</small>)}{rollbackPreview.files.slice(0, 10).map((path) => <small key={path}>{path}</small>)}<div className="git-actions"><button onClick={() => setRollbackPreview(null)}>Cancel</button><button disabled={!rollbackPreview.commits.length} onClick={() => void rollbackGitCheckpoint()}>Rollback…</button></div></div>}
         </section>
         {usage && <section><p>MODEL USAGE</p><small>{usage.requests} requests · {usage.inputTokens} input / {usage.outputTokens} output tokens</small><small>Estimated cost: ${usage.estimatedCostUsd.toFixed(4)} USD</small>{usage.unknownCostRequests > 0 && <small>{usage.unknownCostRequests} requests with unknown cost</small>}</section>}
         <section>
@@ -426,7 +476,7 @@ function App() {
             {visiblePlan && <><div className="plan-progress"><div className="plan-progress-copy"><b>{visiblePlan.summary || planSummary}</b><small>{completedPlanTasks}/{visiblePlan.tasks.length} completed · {runningPlanTasks} running · {waitingPlanTasks} waiting · {failedPlanTasks} failed · {blockedPlanTasks} blocked · {cancelledPlanTasks} cancelled</small></div><progress aria-label="Task plan completion" max={visiblePlan.tasks.length} value={completedPlanTasks} /><button disabled={planRunActive || waitingPlanTasks === 0} onClick={() => void runPlan()}>{planRunActive ? "Running…" : "Run plan"}</button></div><ol className="plan-flow" aria-label="Task dependency flow">{visiblePlan.tasks.map((task, index) => { const prerequisites = (task.dependencies ?? []).map((id) => visiblePlan.tasks.find((candidate) => candidate.id === id)?.title ?? "Unknown task"); return <li className={`plan-flow-item status-${task.status}`} key={task.id}><span className="plan-step">{index + 1}</span><div><b>{task.title}</b><small>{task.role} · {task.status}{prerequisites.length ? ` · after ${prerequisites.join(", ")}` : " · no prerequisites"}</small></div></li>; })}</ol></>}
             <div className="agent"><div className="avatar">O</div><div><b>Orchestrator</b><small>Routes plans and verifies completion</small></div><span>{runningTaskId ? "running" : "idle"}</span></div>
             <h3>Execution queue</h3>
-            {tasks.length ? tasks.map((task) => <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}{(task.retryAttempts ?? task.execution?.retryAttempts ?? 0) > 0 ? ` · ${task.retryAttempts ?? task.execution?.retryAttempts} retry attempts` : ""}</small></div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>) : <div className="empty compact">No execution tasks yet.</div>}
+            {tasks.length ? tasks.map((task) => { const prerequisites = (task.dependencies ?? []).map((id) => tasksById.get(id)?.title ?? "Missing task"); const dependents = dependentsByTaskId.get(task.id) ?? []; return <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}{(task.retryAttempts ?? task.execution?.retryAttempts ?? 0) > 0 ? ` · ${task.retryAttempts ?? task.execution?.retryAttempts} retry attempts` : ""}</small>{prerequisites.length > 0 && <small className="task-relations">Depends on: {prerequisites.join(", ")}</small>}{dependents.length > 0 && <small className="task-relations">Unlocks: {dependents.join(", ")}</small>}</div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>; }) : <div className="empty compact">No execution tasks yet.</div>}
           </section>
         </div>
         <section className="bottom card">

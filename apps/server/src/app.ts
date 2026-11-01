@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
@@ -7,7 +8,7 @@ import { lstat, open, readFile, readdir, realpath, stat } from "node:fs/promises
 import { join, relative, resolve } from "node:path";
 import { AgentExecutor, loadAgentPrompt } from "@pr-0/agent-core";
 import { AnthropicMessagesAdapter, GeminiAdapter, OllamaAdapter, OpenAIResponsesAdapter, ProviderRegistry, type ModelAdapter, type ModelMessage } from "@pr-0/model-gateway";
-import { browserAutomationRequestSchema, canTransition, createConversationSchema, createMessageSchema, createPlanRequestSchema, createProjectSchema, createTaskSchema, projectMemoryInputSchema, taskPlanSchema, todoInputSchema, approveSchema, filesystemListInputSchema, filesystemReadInputSchema, filesystemSearchInputSchema, webResearchRequestSchema, runTaskSchema, terminalStartSchema, writeFileSchema, type TaskPlan, type TerminalStartRequest, type WriteFileRequest } from "@pr-0/shared";
+import { browserAutomationRequestSchema, canTransition, createConversationSchema, createMessageSchema, createPlanRequestSchema, createProjectSchema, createTaskSchema, gitRollbackSchema, projectMemoryInputSchema, taskPlanSchema, todoInputSchema, approveSchema, filesystemListInputSchema, filesystemReadInputSchema, filesystemSearchInputSchema, webResearchRequestSchema, runTaskSchema, terminalStartSchema, writeFileSchema, type TaskPlan, type TerminalStartRequest, type WriteFileRequest } from "@pr-0/shared";
 import { isSensitiveFilePath, isWithin, requiresApproval, safeWorkspacePath, verifyResolvedPath, verifyWritePath } from "@pr-0/tool-runtime";
 import { DatabaseService } from "./db.js";
 import { automatePublicPage } from "./browser-automation.js";
@@ -30,7 +31,7 @@ export async function createApp(config: Config, database = new DatabaseService(c
   const planProgressSubscribers = new Map<string, Set<ServerResponse>>();
   const lastPlanProgress = new Map<string, string>();
   const ignoredDirectoryNames = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".cache"]);
-  const runGitCommand = async (projectId: string, args: string[]): Promise<string> => {
+  const runGitCommand = async (projectId: string, args: string[], maxOutput = 50_000): Promise<string> => {
     const project = database.getProject(projectId); if (!project) throw new Error("Project not found");
     const root = await realpath(project.rootPath);
     return await new Promise<string>((resolveCommand, rejectCommand) => {
@@ -44,7 +45,7 @@ export async function createApp(config: Config, database = new DatabaseService(c
         resolveCommand(output);
       };
       const timeout = setTimeout(() => { child.kill("SIGTERM"); finish(new Error("Git command timed out")); }, 5000);
-      child.stdout?.on("data", (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(0, 50_000); });
+      child.stdout?.on("data", (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(0, maxOutput); });
       child.stderr?.on("data", (chunk: Buffer) => { errorOutput = (errorOutput + chunk.toString("utf8")).slice(0, 500); });
       child.on("error", (error) => finish(new Error(`Unable to run Git: ${error.message}`)));
       child.on("close", (code) => finish(undefined, code));
@@ -70,6 +71,112 @@ export async function createApp(config: Config, database = new DatabaseService(c
     const files = [...parse(staged, true), ...parse(unstaged, false)].slice(0, 500);
     database.audit("git.diff_summary", JSON.stringify({ projectId, files: files.length }));
     return { files, truncated: files.length >= 500 };
+  };
+  const getGitPatch = async (projectId: string, staged: boolean) => {
+    const stagedArgs = staged ? ["--cached"] : [];
+    const nameOutput = await runGitCommand(projectId, ["--literal-pathspecs", "diff", "--no-ext-diff", "--name-only", "-z", ...stagedArgs]);
+    const allPaths = nameOutput.split("\0").filter(Boolean);
+    const paths = allPaths.filter((path) => !isSensitiveFilePath(path)).slice(0, 100);
+    if (!paths.length) return { patch: "", files: [], truncated: allPaths.length > 0 };
+    const patch = await runGitCommand(projectId, ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-color", "--unified=3", ...stagedArgs, "--", ...paths], 100_000);
+    database.audit("git.patch", JSON.stringify({ projectId, staged, files: paths.length, truncated: patch.length >= 100_000 }));
+    return { patch, files: paths, truncated: allPaths.length > paths.length || patch.length >= 100_000 };
+  };
+  const getGitHistory = async (projectId: string) => {
+    try { await runGitCommand(projectId, ["rev-parse", "--verify", "HEAD"]); }
+    catch { return { commits: [], truncated: false }; }
+    const output = await runGitCommand(projectId, ["log", "--max-count=25", "--format=%H%x00%h%x00%aI%x00%an%x00%s%x00"]);
+    const fields = output.split("\0").filter(Boolean);
+    const commits = [];
+    for (let index = 0; index + 4 < fields.length; index += 5) {
+      const [hash, shortHash, authoredAt, author, subject] = fields.slice(index, index + 5);
+      commits.push({ hash, shortHash, authoredAt, author, subject });
+    }
+    database.audit("git.history", JSON.stringify({ projectId, commits: commits.length }));
+    return { commits, truncated: commits.length === 25 };
+  };
+  const checkpointPattern = /^pr0-checkpoint-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  const resolveCheckpointHead = async (projectId: string, checkpointId: string) => {
+    if (!checkpointPattern.test(checkpointId)) throw new Error("Checkpoint not found");
+    return (await runGitCommand(projectId, ["rev-parse", "--verify", `refs/tags/${checkpointId}^{}`])).trim();
+  };
+  const requireCleanGitTree = async (projectId: string) => {
+    const status = await runGitCommand(projectId, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    if (status) throw new Error("Checkpoint rollback requires a clean worktree, including no untracked files");
+    const branch = (await runGitCommand(projectId, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
+    const head = (await runGitCommand(projectId, ["rev-parse", "--verify", "HEAD"])).trim();
+    return { branch, head };
+  };
+  const findIgnoredCheckpointCollisions = async (projectId: string, checkpointHead: string) => {
+    const [trackedOutput, ignoredOutput] = await Promise.all([
+      runGitCommand(projectId, ["ls-tree", "-r", "--name-only", "-z", checkpointHead], 1_000_000),
+      runGitCommand(projectId, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], 1_000_000)
+    ]);
+    if (trackedOutput.length >= 1_000_000 || ignoredOutput.length >= 1_000_000) throw new Error("Rollback path safety check exceeded its size limit");
+    const targetPaths = trackedOutput.split("\0").filter(Boolean);
+    const targetSet = new Set(targetPaths);
+    const targetPrefixes = new Set<string>();
+    for (const target of targetPaths) {
+      const parts = target.split("/");
+      for (let index = 1; index <= parts.length; index++) targetPrefixes.add(parts.slice(0, index).join("/"));
+    }
+    const collisions = new Set<string>();
+    for (const ignoredPath of ignoredOutput.split("\0").filter(Boolean).map((path) => path.replace(/\/+$/, ""))) {
+      if (targetPrefixes.has(ignoredPath)) collisions.add(ignoredPath);
+      const parts = ignoredPath.split("/");
+      for (let index = 1; index < parts.length; index++) {
+        const prefix = parts.slice(0, index).join("/");
+        if (targetSet.has(prefix)) collisions.add(prefix);
+      }
+    }
+    return [...collisions].slice(0, 10);
+  };
+  const listGitCheckpoints = async (projectId: string) => {
+    const output = await runGitCommand(projectId, ["for-each-ref", "--sort=-creatordate", "--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso8601)%09%(subject)", "refs/tags/pr0-checkpoint-*"]);
+    const checkpoints = output.split(/\r?\n/).filter(Boolean).flatMap((line) => {
+      const [id, shortHash, createdAt, subject] = line.split("\t");
+      return id && checkpointPattern.test(id) ? [{ id, shortHash, createdAt, subject }] : [];
+    });
+    return { checkpoints: checkpoints.slice(0, 50), truncated: checkpoints.length > 50 };
+  };
+  const getGitRollbackPreview = async (projectId: string, checkpointId: string) => {
+    const checkpointHead = await resolveCheckpointHead(projectId, checkpointId);
+    const { branch, head } = await requireCleanGitTree(projectId);
+    const collisions = await findIgnoredCheckpointCollisions(projectId, checkpointHead);
+    if (collisions.length) throw new Error(`Rollback would overwrite ignored data: ${collisions.join(", ")}`);
+    if (checkpointHead === head) return { checkpointId, checkpointHead, currentHead: head, branch, commits: [], files: [], truncated: false };
+    try { await runGitCommand(projectId, ["merge-base", "--is-ancestor", checkpointHead, head]); }
+    catch { throw new Error("Checkpoint must be an ancestor of the current branch"); }
+    const [commitOutput, fileOutput] = await Promise.all([
+      runGitCommand(projectId, ["log", "--max-count=50", "--format=%H%x00%h%x00%aI%x00%s%x00", `${checkpointHead}..${head}`]),
+      runGitCommand(projectId, ["--literal-pathspecs", "diff", "--name-only", "-z", checkpointHead, head])
+    ]);
+    const commitFields = commitOutput.split("\0").filter(Boolean);
+    const commits = [];
+    for (let index = 0; index + 3 < commitFields.length; index += 4) {
+      const [hash, shortHash, authoredAt, subject] = commitFields.slice(index, index + 4);
+      commits.push({ hash, shortHash, authoredAt, subject });
+    }
+    const allFiles = fileOutput.split("\0").filter(Boolean);
+    const files = allFiles.filter((path) => !isSensitiveFilePath(path)).slice(0, 100);
+    return { checkpointId, checkpointHead, currentHead: head, branch, commits, files, truncated: commits.length === 50 || allFiles.length > files.length };
+  };
+  const createGitCheckpoint = async (projectId: string) => {
+    const { head } = await requireCleanGitTree(projectId);
+    const id = `pr0-checkpoint-${randomUUID()}`;
+    await runGitCommand(projectId, ["tag", "--annotate", id, "--message", "PR-0 clean-worktree checkpoint", head]);
+    database.audit("git.checkpoint_created", JSON.stringify({ projectId, checkpointId: id, head }));
+    return { id, head };
+  };
+  const rollbackToCheckpoint = async (projectId: string, checkpointId: string, expectedHead: string) => {
+    const preview = await getGitRollbackPreview(projectId, checkpointId);
+    if (preview.currentHead !== expectedHead) throw new Error("Branch HEAD changed after the rollback preview; refresh and review again");
+    if (!preview.commits.length) throw new Error("The branch is already at this checkpoint");
+    const backupRef = `pr0-before-rollback-${randomUUID()}`;
+    await runGitCommand(projectId, ["tag", "--annotate", backupRef, "--message", "PR-0 automatic pre-rollback backup", preview.currentHead]);
+    await runGitCommand(projectId, ["reset", "--hard", preview.checkpointHead]);
+    database.audit("git.rollback", JSON.stringify({ projectId, checkpointId, backupRef, from: preview.currentHead, to: preview.checkpointHead }));
+    return { checkpointId, backupRef, head: preview.checkpointHead, branch: preview.branch };
   };
   const readProjectFile = async (projectId: string, requestedPath: string) => {
     const project = database.getProject(projectId); if (!project) throw new Error("Project not found");
@@ -302,6 +409,12 @@ export async function createApp(config: Config, database = new DatabaseService(c
   });
   app.get("/api/projects/:projectId/git/status", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { git: await getGitStatus(projectId) }; });
   app.get("/api/projects/:projectId/git/diff-summary", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { diff: await getGitDiffSummary(projectId) }; });
+  app.get("/api/projects/:projectId/git/patch", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); const [staged, unstaged] = await Promise.all([getGitPatch(projectId, true), getGitPatch(projectId, false)]); return { staged, unstaged }; });
+  app.get("/api/projects/:projectId/git/history", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { history: await getGitHistory(projectId) }; });
+  app.get("/api/projects/:projectId/git/checkpoints", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { checkpoints: await listGitCheckpoints(projectId) }; });
+  app.post("/api/projects/:projectId/git/checkpoints", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); try { return reply.code(201).send({ checkpoint: await createGitCheckpoint(projectId) }); } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Could not create Git checkpoint" }); } });
+  app.get("/api/projects/:projectId/git/checkpoints/:checkpointId/rollback-preview", async (request, reply) => { const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); try { return { preview: await getGitRollbackPreview(projectId, checkpointId) }; } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Could not preview Git rollback" }); } });
+  app.post("/api/projects/:projectId/git/checkpoints/:checkpointId/rollback", async (request, reply) => { const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); const input = gitRollbackSchema.parse(request.body); try { return { rollback: await rollbackToCheckpoint(projectId, checkpointId, input.expectedHead) }; } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Could not roll back Git checkpoint" }); } });
   app.get("/api/projects/:projectId/usage", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { usage: database.getProjectUsage(projectId) }; });
   app.get("/api/projects/:projectId/todos", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { todos: database.listTodos(projectId) }; });
   app.post("/api/projects/:projectId/todos", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); const input = todoInputSchema.parse(request.body); const todo = database.createTodo(projectId, input); database.audit("todo.created", JSON.stringify({ projectId, todoId: todo.id, priority: todo.priority })); return reply.code(201).send({ todo }); });

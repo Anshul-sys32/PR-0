@@ -84,6 +84,7 @@ export const filesystemReadInputSchema = z.object({ path: z.string().trim().min(
 export const filesystemListInputSchema = z.object({ path: z.string().trim().min(1).max(1024).default("."), maxEntries: z.number().int().min(1).max(500).default(200) });
 export const filesystemSearchInputSchema = z.object({ query: z.string().trim().min(1).max(500), path: z.string().trim().min(1).max(1024).default("."), maxResults: z.number().int().min(1).max(100).default(50) });
 export const webResearchRequestSchema = z.object({ url: z.string().trim().min(1).max(2048) });
+export const gitRollbackSchema = z.object({ confirm: z.literal(true), expectedHead: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i) });
 const browserSelectorSchema = z.string().trim().min(1).max(120).regex(/^(?:[a-z][a-z0-9-]*|#[a-z_][a-z0-9_-]*|\.[a-z_][a-z0-9_-]*|\[[a-z][a-z0-9_-]*(?:=(?:"[a-z0-9 _-]{1,80}"|'[a-z0-9 _-]{1,80}'|[a-z0-9_-]+))?\]|[a-z][a-z0-9-]*(?:#[a-z_][a-z0-9_-]*|\.[a-z_][a-z0-9_-]*|\[[a-z][a-z0-9_-]*(?:=(?:"[a-z0-9 _-]{1,80}"|'[a-z0-9 _-]{1,80}'|[a-z0-9_-]+))?\]))$/i);
 export const browserAutomationRequestSchema = z.object({
   url: z.string().trim().min(1).max(2048),

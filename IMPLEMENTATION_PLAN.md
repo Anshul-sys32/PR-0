@@ -42,8 +42,8 @@
 ## Verification recorded in this resume
 
 - `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web workspaces.
-- `npm test`: passed, 7 test files and 66 tests after Playwright browser automation and public web research.
-- `npx vitest run tests/integration/api.test.ts`: passed, 16 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, SSE progress, and browser/research URL rejection.
+- `npm test`: passed, 7 test files and 67 tests after Git patch/history/checkpoint support and project-wide dependency relationships.
+- `npx vitest run tests/integration/api.test.ts`: passed, 17 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, SSE progress, browser/research URL rejection, Git patch/history, and checkpoint rollback safeguards.
 - `npx vitest run tests/unit/web-research.test.ts`: passed URL, IP-range, DNS-mixing, and address-pinning policy cases without outbound network calls.
 - `npx vitest run tests/unit/browser-automation.test.ts`: passed 2 Chromium-backed tests using a mocked fetcher to verify navigation, local text-field interaction, screenshot capture, and blocked subresources.
 - `npm run build`: passed across all packages; Vite reports a non-blocking recommendation to switch React plugins for Rolldown performance.
@@ -58,7 +58,7 @@
 - [x] Finish Phase 5 UI: add a Run plan control and poll/display plan-level execution progress; persist transient provider retry attempts and expose their count; verify duplicate active task/plan runs return conflicts.
 - [x] Complete Phase 6 real-time plan updates with SSE and improve task-plan visualization with an ordered dependency flow and named prerequisites.
 - [x] Implement browser automation and public web research with strict network controls: user-submitted HTTPS pages use public-IP DNS pinning, redirect rejection, bounded text retrieval, and an isolated Playwright context with JavaScript/subresources disabled, GET-only validated navigation, and restricted selector actions.
-- [ ] Complete Git integration with patch viewer/history/checkpoints/rollback and add task dependency visualization.
+- [x] Complete Git integration with sensitive-path-filtered patch viewing, bounded commit history, clean-worktree checkpoint tags, preview-bound rollback with explicit confirmation and a backup tag, plus project-wide prerequisite/dependent task relationships.
 - [ ] Harden project memory retrieval, improve secret detection, and cover memory UI workflows with browser tests.
 - [ ] Complete hardening, security coverage, browser tests, and release documentation.
 
