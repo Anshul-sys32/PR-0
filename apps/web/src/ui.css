@@ -138,6 +138,15 @@ small { color: var(--muted); line-height: 1.45; }
 .option-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 10px 0; }
 .option-grid label, .tool-view label, .dialog label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
 .option-grid input, .option-grid select, .tool-view input, .tool-view select, .tool-view textarea, .dialog input { width: 100%; min-width: 0; min-height: 38px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: #111711; color: var(--text); }
+.provider-policy-controls { display: grid; gap: 7px; padding: 10px 0; border-top: 1px solid var(--border); }
+.provider-policy-controls label, .provider-fallback-options label, .hosted-consent { display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: 12px; line-height: 1.45; }
+.provider-policy-controls input[type="checkbox"], .provider-fallback-options input[type="checkbox"], .hosted-consent input[type="checkbox"] { width: 16px; min-width: 16px; min-height: 16px; margin: 1px 0 0; accent-color: var(--accent); }
+.provider-policy-controls p, .provider-fallback-options small, .provider-capabilities { margin: 0; color: var(--subtle); font-size: 11px; line-height: 1.5; }
+.provider-fallback-options { display: flex; flex-wrap: wrap; gap: 9px 16px; margin: 6px 0 10px; padding: 10px; border: 1px solid var(--border); border-radius: 4px; }
+.provider-fallback-options legend { padding: 0 5px; color: var(--muted); font-size: 11px; }
+.provider-fallback-options small { flex-basis: 100%; }
+.hosted-consent { margin: 8px 0; padding: 10px; border: 1px solid #76613a; border-radius: 4px; background: #282418; }
+.provider-capabilities { margin: 8px 0; }
 .inline-warning, .inline-error { padding: 9px 10px; border-left: 3px solid var(--warning); background: #302a1c; color: #f0d195; font-size: 12px; }
 .inline-error { border-color: var(--danger); background: #382522; color: #f2b1a6; }
 .composer-footer { display: flex; align-items: center; gap: 12px; min-width: 0; }

@@ -41,7 +41,7 @@ The project is evolving. The table below describes the current product direction
 | Area | Direction |
 |---|---|
 | **Agent workspace** | A unified place to prompt the agent, inspect progress, and follow task execution. |
-| **Model providers** | Existing OpenAI, Anthropic, and Gemini API adapters; local Ollama is the normal default; Mock is an explicit test-only option. |
+| **Model providers** | OpenAI, Anthropic, Gemini, OpenRouter, and local Ollama use one adapter interface; free-only and local-only policies and explicit fallback allowlists are available. Mock remains test-only. |
 | **Task planning** | Break requests into steps and make execution progress easier to follow. |
 | **Project tools** | Work with files and workspace context through controlled tools. |
 | **Terminal workflows** | Run development commands and inspect output where supported and enabled. |
@@ -51,9 +51,11 @@ The project is evolving. The table below describes the current product direction
 
 ### Multi-model development
 
-PR-0 keeps provider integrations modular rather than tying the product to a single model. Implemented adapters include OpenAI, Google Gemini, Anthropic Claude, and local Ollama. Ollama is selected by default and can run without a separate paid API key; the UI checks whether the local service is reachable and shows installed model tags. Mock remains available only as a deterministic test adapter and never calls a real model.
+PR-0 keeps provider integrations modular rather than tying the product to a single model. Implemented adapters include OpenAI, Google Gemini, Anthropic Claude, OpenRouter, and local Ollama. Ollama is selected by default and can run without a separate hosted-provider key; the UI checks whether the local service is reachable and shows installed model tags. OpenRouter uses its documented API and dynamic tool-compatible model catalog, with `openrouter/free` available for free-only routing. Mock remains available only as a deterministic test adapter and never calls a real model.
 
-PR-0 does not automate logged-in consumer AI websites. Provider terms reviewed for OpenAI and Anthropic do not authorize the requested browser automation; Google's terms do not explicitly authorize automating Gemini Apps as a model API. Use the supported Gemini API adapter or local Ollama instead. See [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
+PR-0 does not automate consumer AI chat websites. A review of ChatGPT, Claude, Gemini Apps, Copilot, Perplexity, and Duck.ai found no permitted browser-chat integration route; some sites allow limited guest use, but their terms or machine-readable site instructions prohibit or fail to authorize automated prompting and response retrieval. See [`docs/PROVIDERS.md`](docs/PROVIDERS.md) for the official evidence and limits.
+
+Hosted API providers can receive task and conversation context, project-memory notes, and model-requested workspace tool results. PR-0 requires per-run consent before hosted inference; model-catalog lookup sends no project content. Local-only mode suppresses the catalog and blocks hosted inference/fallback. Free-only mode blocks paid/unverified models; fallback is off unless explicitly allowed, policy-checked, and does not replay a successful tool call. Credential-like data is blocked before forwarding. OpenRouter free models have variable availability and documented rate limits, not unlimited service. Gemini Developer API's free tier is separate from Gemini Apps and applies only to selected models under changing quotas and data-use terms.
 
 Different models may be better suited to different tasks—for example, frontend design, backend reasoning, debugging, or research. Provider routing and specialized agent roles should be treated as configurable capabilities, not a guarantee that every role or provider is available in every build.
 

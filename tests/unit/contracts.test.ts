@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { canTransition, agentResultSchema } from "@pr-0/shared";
+import { canTransition, agentResultSchema, runTaskSchema } from "@pr-0/shared";
 import { containsCredentialLikeValue, isSensitiveFilePath, isWithin, safeWorkspacePath, requiresApproval } from "@pr-0/tool-runtime";
 
 describe("task contracts", () => {
   it("only allows declared state transitions", () => { expect(canTransition("ready", "running")).toBe(true); expect(canTransition("completed", "running")).toBe(false); });
   it("rejects malformed agent results", () => { expect(() => agentResultSchema.parse({ taskId: "x", status: "completed" })).toThrow(); });
+  it("requires unique providers in an explicit fallback allowlist", () => {
+    expect(() => runTaskSchema.parse({ providerId: "ollama", fallbackProviders: ["openrouter", "openrouter"] })).toThrow("unique");
+    expect(runTaskSchema.parse({ providerId: "ollama" })).toMatchObject({ freeOnly: true, localOnly: false, hostedConsent: false, fallbackProviders: [] });
+  });
 });
 describe("tool security primitives", () => {
   it("rejects workspace path escapes", () => { expect(() => safeWorkspacePath("/tmp/workspace", "../secret")).toThrow(); });

@@ -85,6 +85,10 @@ test("agent workflow creates and runs a task, with grouped navigation at desktop
   await expect(page.locator(".topbar-title small")).toHaveText("Agent workflow workspace");
   await expect(page.getByLabel("Model provider")).toHaveValue("ollama");
   await page.locator(".composer-options summary").click();
+  await expect(page.getByLabel("Free-only mode")).toBeChecked();
+  await page.getByLabel("Local-only mode").check();
+  await expect(page.getByLabel("Local-only mode")).toBeChecked();
+  await page.getByLabel("Local-only mode").uncheck();
   await page.getByLabel("Model provider").selectOption("mock");
 
   await page.getByRole("textbox", { name: "Development task" }).fill("Explain the `workspace` and **report** one useful next step");

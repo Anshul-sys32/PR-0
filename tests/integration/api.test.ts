@@ -8,7 +8,7 @@ import { createApp } from "../../apps/server/src/app.js";
 import { DatabaseService } from "../../apps/server/src/db.js";
 import type { FastifyInstance } from "fastify";
 import type { ModelAdapter, ModelRequest, ModelRequestOptions, ModelResponse } from "@pr-0/model-gateway";
-import { OllamaAdapter } from "@pr-0/model-gateway";
+import { OllamaAdapter, OpenRouterAdapter } from "@pr-0/model-gateway";
 
 class AbortableTestAdapter implements ModelAdapter {
   readonly providerId = "ollama";
@@ -109,6 +109,50 @@ describe("local workflow", () => {
       expect(local).toMatchObject({ configured: true, integrationType: "local", status: "connected", models: ["qwen2.5-coder:7b"] });
       expect(response.json().providers.find((provider: { id: string }) => provider.id === "mock")).toMatchObject({ integrationType: "test", status: "test" });
       expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally { await providerApp.close(); }
+  });
+
+  it("routes an explicitly consented OpenRouter free model through the normal agent loop and blocks unsafe policies before network access", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      if (init?.method === "GET") return new Response(JSON.stringify({ data: [
+        { id: "org/free-coder:free", name: "Free Coder", context_length: 64000, pricing: { prompt: "0", completion: "0", request: "0" }, supported_parameters: ["tools"] },
+        { id: "org/paid-coder", name: "Paid Coder", context_length: 128000, pricing: { prompt: "0.000001", completion: "0.000002", request: "0" }, supported_parameters: ["tools"] }
+      ] }), { status: 200 });
+      const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ role: string; content: string }> };
+      return new Response(JSON.stringify({ model: body.model, choices: [{ finish_reason: "stop", message: { content: `OpenRouter answered: ${body.messages.at(-1)?.content ?? ""}` } }], usage: { prompt_tokens: 18, completion_tokens: 9, cost: 0 } }), { status: 200 });
+    });
+    const providerApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "openrouter.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 2, MAX_TOOL_STEPS_PER_TASK: 40, OPENROUTER_API_KEY: "test-openrouter-key" }, undefined, [new OpenRouterAdapter("test-openrouter-key", undefined, fetcher)]);
+    try {
+      const project = (await providerApp.inject({ method: "POST", url: "/api/projects", payload: { name: "openrouter-test", rootPath: directory } })).json().project;
+      const task = (await providerApp.inject({ method: "POST", url: "/api/projects/:projectId/tasks".replace(":projectId", project.id), payload: { title: "OpenRouter test", description: "Summarize the request", role: "orchestrator", dependencies: [], acceptanceCriteria: [], priority: 0 } })).json().task;
+      const localOnly = await providerApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "openrouter", modelId: "org/free-coder:free", localOnly: true, freeOnly: true, hostedConsent: true } });
+      expect(localOnly.statusCode).toBe(400);
+      expect(localOnly.json().error).toContain("Local-only mode");
+      expect(fetcher).not.toHaveBeenCalled();
+      const noConsent = await providerApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "openrouter", modelId: "org/free-coder:free", freeOnly: true, hostedConsent: false } });
+      expect(noConsent.statusCode).toBe(400);
+      expect(noConsent.json().error).toContain("consent");
+      expect(fetcher).not.toHaveBeenCalled();
+      const noConsentPlan = await providerApp.inject({ method: "POST", url: `/api/projects/${project.id}/plan`, payload: { description: "Create a plan", providerId: "openrouter", modelId: "org/free-coder:free", freeOnly: true, hostedConsent: false } });
+      expect(noConsentPlan.statusCode).toBe(400);
+      expect(noConsentPlan.json().error).toContain("consent");
+      expect(fetcher).not.toHaveBeenCalled();
+      const paidModel = await providerApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "openrouter", modelId: "org/paid-coder", freeOnly: true, hostedConsent: true } });
+      expect(paidModel.statusCode).toBe(400);
+      expect(paidModel.json().error).toContain("free model");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const response = await providerApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "openrouter", modelId: "org/free-coder:free", freeOnly: true, hostedConsent: true } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ provider: "openrouter", model: "org/free-coder:free", result: { status: "completed", summary: "OpenRouter answered: Summarize the request" } });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const secretTask = (await providerApp.inject({ method: "POST", url: `/api/projects/${project.id}/tasks`, payload: { title: "Secret test", description: "Use OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456", role: "orchestrator", dependencies: [], acceptanceCriteria: [], priority: 0 } })).json().task;
+      const blockedSecret = await providerApp.inject({ method: "POST", url: `/api/tasks/${secretTask.id}/run`, payload: { providerId: "openrouter", modelId: "org/free-coder:free", freeOnly: true, hostedConsent: true } });
+      expect(blockedSecret.statusCode).toBe(400);
+      expect(blockedSecret.json().error).toContain("Credential-like content");
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const providers = await providerApp.inject("/api/providers");
+      expect(providers.json().providers.find((provider: { id: string }) => provider.id === "openrouter")).toMatchObject({ configured: true, integrationType: "api", status: "configured", modelCatalog: true });
+      expect(fetcher).toHaveBeenCalledTimes(2);
     } finally { await providerApp.close(); }
   });
 

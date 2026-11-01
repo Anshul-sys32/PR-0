@@ -80,3 +80,23 @@
 - [x] Make Ollama the normal UI provider, keep Mock explicitly test-only, report actual local service status/model tags, and gate model execution on provider/model readiness.
 - [x] Add deterministic Ollama status/normalization tests and a mocked API provider-status integration test.
 - [ ] Verify a real local Ollama install/model end to end; no daemon/model is available in this test environment.
+
+## Consumer Browser Provider Audit (2026-11-01)
+
+- [x] Audit the model gateway, existing API/Ollama adapters, Playwright runtime, agent loop, provider UI, provider/security docs, environment example, and current implementation plan.
+- [x] Review official terms/help and site instructions for ChatGPT, Claude, Gemini Apps, Microsoft Copilot, Perplexity, and Duck.ai. No candidate establishes a permitted consumer-chat automation path; guest access is not automation permission.
+- [x] Keep the existing provider gateway and Ollama/API adapters unchanged. No browser provider was implemented, and no private endpoints, cookie/token extraction, CAPTCHA bypass, or anti-bot evasion was added.
+- [x] Record viable API/local alternatives and current limitations in `docs/PROVIDERS.md`.
+- [x] Add one-run hosted inference consent; credential-like task/history/memory/tool-result content is blocked before transmission. Metadata-only OpenRouter catalog access is separate from project-content inference and is suppressed in local-only mode.
+- [ ] Reconsider a browser provider only after the provider publishes or grants permission for the exact automated prompting and response-retrieval method.
+
+## Free-First Provider Routing
+
+- [x] Add an OpenRouter adapter through the existing `ModelAdapter` gateway using the documented Chat Completions API and live `/models` catalog.
+- [x] Add the documented `openrouter/free` route and live catalog validation for explicit model IDs; free-only rejects paid and unverified hosted routes.
+- [x] Add local-only and hosted-consent enforcement before hosted inference, including task planning and plan task execution; local-only also suppresses hosted catalog lookup.
+- [x] Add explicit fallback-provider allowlisting; fallbacks are bounded, transient-error-only, policy-checked, and stop once a response/tool call is returned.
+- [x] Add locally persisted provider/model and policy preferences, per-run hosted data consent, capability/catalog status, and provider/model reporting.
+- [x] Add deterministic OpenRouter normalization, catalog, error, policy, fallback, agent-loop, and API integration tests.
+- [ ] Verify live OpenRouter inference with an operator-provided API key; no live credentials were used for this implementation.
+- [ ] Add persistent task-level route events if users need to inspect multiple provider transitions after a fallback sequence.

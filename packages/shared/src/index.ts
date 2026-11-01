@@ -2,6 +2,16 @@ import { z } from "zod";
 
 export const agentRoles = ["orchestrator", "architect", "frontend", "backend", "debugger", "reviewer", "qa", "researcher", "documentation"] as const;
 export const projectMemoryKinds = ["fact", "decision", "outcome"] as const;
+export const modelProviderIds = ["mock", "openai", "anthropic", "gemini", "ollama", "openrouter"] as const;
+export const providerRunPolicySchema = z.object({
+  hostedConsent: z.boolean().default(false),
+  localOnly: z.boolean().default(false),
+  freeOnly: z.boolean().default(true),
+  fallbackProviders: z.array(z.enum(modelProviderIds)).max(5).default([])
+}).superRefine((policy, context) => {
+  if (new Set(policy.fallbackProviders).size !== policy.fallbackProviders.length) context.addIssue({ code: "custom", path: ["fallbackProviders"], message: "Fallback providers must be unique" });
+});
+export type ProviderRunPolicy = z.infer<typeof providerRunPolicySchema>;
 export const taskStates = ["pending", "ready", "running", "waiting_for_tool", "waiting_for_approval", "blocked", "failed", "completed", "cancelled"] as const;
 export const agentTaskSchema = z.object({
   id: z.string(), projectId: z.string(), title: z.string().min(1), description: z.string().min(1),
@@ -62,8 +72,10 @@ export const taskPlanSchema = z.object({
 });
 export const createPlanRequestSchema = z.object({
   description: z.string().trim().min(1).max(20_000),
-  providerId: z.enum(["mock", "openai", "anthropic", "gemini", "ollama"]).default("mock"),
+  providerId: z.enum(modelProviderIds).default("mock"),
   modelId: z.string().trim().min(1).max(120).optional()
+}).extend(providerRunPolicySchema.shape).superRefine((request, context) => {
+  if (new Set(request.fallbackProviders).size !== request.fallbackProviders.length) context.addIssue({ code: "custom", path: ["fallbackProviders"], message: "Fallback providers must be unique" });
 });
 export type PlannedTask = z.infer<typeof planTaskSchema>;
 export type TaskPlan = z.infer<typeof taskPlanSchema>;
@@ -84,7 +96,9 @@ export const terminalStartSchema = z.object({
   mode: z.enum(["ask-first", "supervised", "autonomous"]).default("supervised")
 });
 export type TerminalStartRequest = z.infer<typeof terminalStartSchema>;
-export const runTaskSchema = z.object({ providerId: z.enum(["mock", "openai", "anthropic", "gemini", "ollama"]).default("mock"), modelId: z.string().trim().min(1).max(120).optional() }).default({ providerId: "mock" });
+export const runTaskSchema = z.object({ providerId: z.enum(modelProviderIds).default("mock"), modelId: z.string().trim().min(1).max(120).optional() }).extend(providerRunPolicySchema.shape).superRefine((request, context) => {
+  if (new Set(request.fallbackProviders).size !== request.fallbackProviders.length) context.addIssue({ code: "custom", path: ["fallbackProviders"], message: "Fallback providers must be unique" });
+}).default({ providerId: "mock", hostedConsent: false, localOnly: false, freeOnly: true, fallbackProviders: [] });
 export const filesystemReadInputSchema = z.object({ path: z.string().trim().min(1).max(1024) });
 export const filesystemListInputSchema = z.object({ path: z.string().trim().min(1).max(1024).default("."), maxEntries: z.number().int().min(1).max(500).default(200) });
 export const filesystemSearchInputSchema = z.object({ query: z.string().trim().min(1).max(500), path: z.string().trim().min(1).max(1024).default("."), maxResults: z.number().int().min(1).max(100).default(50) });

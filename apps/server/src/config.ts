@@ -18,6 +18,8 @@ const envSchema = z.object({
   ANTHROPIC_MODEL: z.string().trim().min(1).optional(),
   GEMINI_API_KEY: z.string().min(1).optional(),
   GEMINI_MODEL: z.string().trim().min(1).optional(),
+  OPENROUTER_API_KEY: z.string().min(1).optional(),
+  OPENROUTER_MODEL: z.string().trim().min(1).optional(),
   OLLAMA_BASE_URL: z.string().url().default("http://127.0.0.1:11434"),
   OLLAMA_MODEL: z.string().trim().min(1).optional()
 });

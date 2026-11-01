@@ -13,7 +13,13 @@ type TaskPlan = { id: string; projectId: string; summary: string; tasks: Task[] 
 type PublicResearchResult = { url: string; title: string; text: string };
 type BrowserAutomationResult = { url: string; title: string; text: string; links: string[]; screenshotBase64: string; actions: Array<{ type: string; selector: string; ok: boolean; message: string }> };
 type ProviderStatus = "test" | "configured" | "connected" | "authentication_required" | "rate_limited" | "unsupported" | "unavailable" | "unverified";
-type Provider = { id: string; configured: boolean; defaultModel: string | null; integrationType?: "api" | "local" | "test"; status?: ProviderStatus; models?: string[]; error?: string };
+type OpenRouterModel = { id: string; name: string; description?: string; contextLength?: number; maxOutputTokens?: number; promptPriceUsdPerToken: number | null; completionPriceUsdPerToken: number | null; supportsTools: boolean; free: boolean };
+type Provider = { id: string; configured: boolean; defaultModel: string | null; integrationType?: "api" | "local" | "test"; status?: ProviderStatus; models?: string[]; error?: string; modelCatalog?: boolean; capabilities?: { streaming: boolean; toolCalling: boolean; structuredOutput: boolean; vision: boolean; supportsCancellation: boolean; maxContextTokens?: number } };
+type ProviderPreferences = { providerId: string; modelId: string; freeOnly: boolean; localOnly: boolean; fallbackProviders: string[] };
+const readProviderPreferences = (): Partial<ProviderPreferences> => {
+  try { return JSON.parse(localStorage.getItem("pr0.providerPreferences") ?? "{}") as Partial<ProviderPreferences>; }
+  catch { return {}; }
+};
 type Conversation = { id: string; projectId: string; createdAt: string };
 type ChatMessage = { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string };
 type FileEntry = { name: string; path: string; type: "file" | "directory" | "symlink" | "other" };
@@ -29,7 +35,7 @@ type GitRollbackPreview = { checkpointId: string; checkpointHead: string; curren
 type MemoryNote = { id: string; projectId: string; kind: "fact" | "decision" | "outcome"; content: string; createdAt: string; updatedAt: string };
 type UsageSummary = { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; unknownCostRequests: number };
 type ManualTodo = { id: string; projectId: string; title: string; description: string; priority: number; acceptanceCriteria: string[]; status: "open" | "completed"; createdAt: string; updatedAt: string };
-const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const headers = new Headers(init?.headers); if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json"); const res = await fetch(`/api${path}`, { ...init, headers }); const data = await res.json() as T & { error?: string }; if (!res.ok) throw new Error(data.error ?? "Request failed"); return data; };
+const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const headers = new Headers(init?.headers); if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json"); const res = await fetch(`/api${path}`, { ...init, headers }); const data = await res.json() as T & { error?: string }; if (!res.ok) { const error = new Error(data.error ?? "Request failed"); Object.assign(error, { statusCode: res.status }); throw error; } return data; };
 function App() {
   const [activeView, setActiveView] = useState<WorkspaceView>("agent");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -41,7 +47,13 @@ function App() {
   const [projectError, setProjectError] = useState("");
   const [approvalBusyId, setApprovalBusyId] = useState<string>();
   const [taskCreating, setTaskCreating] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connecting to local workspace…"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "ollama", configured: true, integrationType: "local", status: "unverified", defaultModel: null, models: [] }, { id: "mock", configured: true, integrationType: "test", status: "test", defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("ollama"); const [modelId, setModelId] = useState(""); const [providersLoading, setProvidersLoading] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connecting to local workspace…"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "ollama", configured: true, integrationType: "local", status: "unverified", defaultModel: null, models: [] }, { id: "mock", configured: true, integrationType: "test", status: "test", defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState(() => readProviderPreferences().providerId ?? "ollama"); const [modelId, setModelId] = useState(() => readProviderPreferences().modelId ?? ""); const [providersLoading, setProvidersLoading] = useState(false);
+  const [freeOnly, setFreeOnly] = useState(() => readProviderPreferences().freeOnly ?? true);
+  const [localOnly, setLocalOnly] = useState(() => readProviderPreferences().localOnly ?? false);
+  const [fallbackProviders, setFallbackProviders] = useState<string[]>(() => readProviderPreferences().fallbackProviders ?? []);
+  const [hostedConsent, setHostedConsent] = useState(false);
+  const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
+  const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [agentRole, setAgentRole] = useState("orchestrator");
   const [runningTaskId, setRunningTaskId] = useState<string>();
   const [dependencyId, setDependencyId] = useState("");
@@ -95,12 +107,20 @@ function App() {
   const providerCanExecute = () => {
     const selected = providers.find((provider) => provider.id === providerId);
     if (!selected || unavailableProviders.includes(providerId)) return false;
+    if (localOnly && providerId !== "ollama" && providerId !== "mock") return false;
+    if (freeOnly && providerId !== "ollama" && providerId !== "mock" && providerId !== "openrouter") return false;
+    if (providerId === "openrouter" && freeOnly && modelId && modelId !== "openrouter/free" && !openRouterModels.some((model) => model.id === modelId && model.free && model.supportsTools)) return false;
+    if (!hostedConsent && (providerId !== "ollama" && providerId !== "mock" || fallbackProviders.some((id) => id !== "ollama" && id !== "mock"))) return false;
     if (providerId === "mock") return true;
     if (!modelId.trim() && !selected.defaultModel) return false;
     return selected.status === "configured" || selected.status === "connected";
   };
   const providerBlockedReason = () => {
     const selected = providers.find((provider) => provider.id === providerId);
+    if (localOnly && providerId !== "ollama" && providerId !== "mock") return "Local-only mode blocks hosted providers.";
+    if (freeOnly && providerId !== "ollama" && providerId !== "mock" && providerId !== "openrouter") return "Free-only mode allows Ollama or catalog-verified free OpenRouter models.";
+    if (providerId === "openrouter" && freeOnly && modelId && modelId !== "openrouter/free" && !openRouterModels.some((model) => model.id === modelId && model.free && model.supportsTools)) return "Select a currently listed free OpenRouter model with tool-calling support.";
+    if (!hostedConsent && (providerId !== "ollama" && providerId !== "mock" || fallbackProviders.some((id) => id !== "ollama" && id !== "mock"))) return "Confirm one-run hosted data sharing before execution.";
     if (providerId === "ollama" && selected?.status === "unavailable") return selected.error ?? "Ollama is not reachable. Start Ollama and refresh provider status.";
     if (selected?.status === "authentication_required") return `${providerId} requires authentication or a server API credential.`;
     if (selected?.status === "rate_limited") return `${providerId} is rate limited. Try again later.`;
@@ -147,7 +167,33 @@ function App() {
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not refresh provider status"); }
     finally { setProvidersLoading(false); }
   };
+  const refreshOpenRouterModels = async (signal?: AbortSignal) => {
+    setOpenRouterModelsLoading(true);
+    try {
+      const data = await api<{ models: OpenRouterModel[]; truncated: boolean }>(`/providers/openrouter/models?freeOnly=${freeOnly}`, { signal });
+      setOpenRouterModels(data.models);
+      setProviders((current) => current.map((provider) => provider.id === "openrouter" ? { ...provider, status: "configured", error: undefined } : provider));
+    } catch (error) {
+      if (signal?.aborted) return;
+      const statusCode = typeof error === "object" && error !== null && "statusCode" in error ? Number(error.statusCode) : 0;
+      const providerStatus: ProviderStatus = statusCode === 401 || statusCode === 403 ? "authentication_required" : statusCode === 429 ? "rate_limited" : "unavailable";
+      const message = error instanceof Error ? error.message : "Could not load OpenRouter models";
+      setProviders((current) => current.map((provider) => provider.id === "openrouter" ? { ...provider, status: providerStatus, error: message } : provider));
+      setOpenRouterModels([]);
+      setStatus(message);
+    }
+    finally { setOpenRouterModelsLoading(false); }
+  };
+  useEffect(() => {
+    localStorage.setItem("pr0.providerPreferences", JSON.stringify({ providerId, modelId, freeOnly, localOnly, fallbackProviders } satisfies ProviderPreferences));
+  }, [providerId, modelId, freeOnly, localOnly, fallbackProviders]);
   useEffect(() => { void load().then(() => setStatus("Connected to local API")).catch((error: Error) => setStatus(error.message)); void refreshProviders(); }, []);
+  useEffect(() => {
+    if (providerId !== "openrouter" || localOnly) { setOpenRouterModels([]); return; }
+    const controller = new AbortController();
+    void refreshOpenRouterModels(controller.signal);
+    return () => controller.abort();
+  }, [providerId, freeOnly, localOnly]);
   useEffect(() => {
     if (!projectDialogOpen && !rollbackConfirmOpen) return;
     const handleDialogKey = (event: KeyboardEvent) => {
@@ -203,7 +249,7 @@ function App() {
     setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: "running" } : item));
     setStatus(`${providerId} model is executing…`);
     try {
-      const data = await api<{ result?: { summary: string }; provider?: string; model?: string; cancelled?: boolean }>(`/tasks/${task.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      const data = await api<{ result?: { summary: string }; provider?: string; model?: string; cancelled?: boolean }>(`/tasks/${task.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}), hostedConsent, localOnly, freeOnly, fallbackProviders }) });
       if (data.cancelled) {
         setStatus("Task cancelled.");
         await load();
@@ -218,6 +264,7 @@ function App() {
       await load();
     } finally {
       setRunningTaskId((current) => current === task.id ? undefined : current);
+      setHostedConsent(false);
     }
   };
   const cancel = async (task: Task) => {
@@ -437,7 +484,7 @@ function App() {
     if (!active || !message.trim() || !providerCanExecute()) { if (!providerCanExecute()) setStatus(providerBlockedReason()); return; }
     setPlanning(true); setStatus("Generating a task plan…");
     try {
-      const data = await api<{ plan: TaskPlan }>(`/projects/${active.id}/plan`, { method: "POST", body: JSON.stringify({ description: message.trim(), providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      const data = await api<{ plan: TaskPlan }>(`/projects/${active.id}/plan`, { method: "POST", body: JSON.stringify({ description: message.trim(), providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}), hostedConsent, localOnly, freeOnly, fallbackProviders }) });
       setPlanSummary(data.plan.summary);
       setActivePlan(data.plan);
       setPlanRunActive(false);
@@ -445,16 +492,17 @@ function App() {
       setMessage("");
       setStatus(`Plan created with ${data.plan.tasks.length} tasks. Review the dependency queue before running them.`);
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not generate task plan"); }
-    finally { setPlanning(false); }
+    finally { setPlanning(false); setHostedConsent(false); }
   };
   const runPlan = async () => {
     if (!activePlan || !providerCanExecute()) { if (!providerCanExecute()) setStatus(providerBlockedReason()); return; }
     setStatus("Starting task plan…");
     try {
-      await api<{ planId: string; status: "running"; taskIds: string[] }>(`/task-plans/${activePlan.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      await api<{ planId: string; status: "running"; taskIds: string[] }>(`/task-plans/${activePlan.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}), hostedConsent, localOnly, freeOnly, fallbackProviders }) });
       setPlanRunActive(true);
       setStatus("Plan is running. Progress updates automatically.");
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not run task plan"); }
+    finally { setHostedConsent(false); }
   };
   useEffect(() => {
     if (!activePlan || !planRunActive) return;
@@ -488,6 +536,8 @@ function App() {
   const blockedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "blocked").length ?? 0;
   const cancelledPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "cancelled").length ?? 0;
   const activeProvider = providers.find((provider) => provider.id === providerId);
+  const hostedRouteSelected = (providerId !== "ollama" && providerId !== "mock") || fallbackProviders.some((id) => id !== "ollama" && id !== "mock");
+  const allowedFallbackOptions = providers.filter((provider) => provider.id !== providerId && provider.id !== "mock" && provider.configured && (!localOnly || provider.id === "ollama") && (!freeOnly || provider.id === "ollama" || provider.id === "openrouter"));
   const unavailableSelectedProvider = unavailableProviders.includes(providerId) || ["unavailable", "authentication_required", "rate_limited", "unsupported"].includes(activeProvider?.status ?? "");
   const providerReady = providerCanExecute();
   const providerStatusText = providerId === "mock"
@@ -533,14 +583,25 @@ function App() {
             <div className="composer">
               <details className="composer-options"><summary>Task options <span>{agentRole} · {activeProvider?.id === "mock" ? "Mock provider" : providerId}</span></summary>
                 <div className="option-grid">
-                  <label>Provider<select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock · explicit test mode" : provider.id === "ollama" ? `Ollama · local · ${provider.status?.replaceAll("_", " ") ?? "checking"}` : `${provider.id} API · configured`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id} disabled>{id} · credentials missing</option>)}</select></label>
-                  {providerId === "ollama" && activeProvider?.models?.length && !activeProvider.defaultModel
+                  <label>Preferred provider<select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock · explicit test mode" : provider.id === "ollama" ? `Ollama · local · ${provider.status?.replaceAll("_", " ") ?? "checking"}` : provider.id === "openrouter" ? `OpenRouter API · ${provider.status ?? "checking"}` : `${provider.id} API · ${provider.status ?? "configured"}`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id} disabled>{id} · credentials missing</option>)}</select></label>
+                  {providerId === "openrouter" ? <label>OpenRouter model<select aria-label="Model id" value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Select a catalog model</option>{openRouterModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id}) · {model.free ? "free" : model.promptPriceUsdPerToken === null || model.completionPriceUsdPerToken === null ? "pricing unknown" : `${(model.promptPriceUsdPerToken * 1_000_000).toPrecision(3)}/${(model.completionPriceUsdPerToken * 1_000_000).toPrecision(3)} USD/M in/out`} · {model.contextLength?.toLocaleString() ?? "context unknown"} · tools</option>)}</select></label>
+                    : providerId === "ollama" && activeProvider?.models?.length && !activeProvider.defaultModel
                     ? <label>Installed local model<select aria-label="Model id" value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Select installed model</option>{activeProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
                     : providerId !== "mock" && <label>Model identifier<input aria-label="Model id" placeholder={activeProvider?.defaultModel ?? "Select or configure a model"} value={modelId} onChange={(event) => setModelId(event.target.value)} /></label>}
                   <label>Agent role<select aria-label="Agent role" value={agentRole} onChange={(event) => setAgentRole(event.target.value)}>{["orchestrator", "architect", "frontend", "backend", "debugger", "reviewer", "qa", "researcher", "documentation"].map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
                   <label>Prerequisite<select aria-label="Task prerequisite" value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}><option value="">None</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title} ({task.status})</option>)}</select></label>
                 </div>
                 <button className="secondary-button" disabled={providersLoading} onClick={() => void refreshProviders()} type="button">{providersLoading ? "Checking provider…" : "Refresh provider status"}</button>
+                {providerId === "openrouter" && <button className="secondary-button" disabled={openRouterModelsLoading} onClick={() => void refreshOpenRouterModels()} type="button">{openRouterModelsLoading ? "Loading model catalog…" : "Refresh OpenRouter model catalog"}</button>}
+                <div className="provider-policy-controls" aria-label="Provider privacy and fallback settings">
+                  <label><input aria-label="Free-only mode" type="checkbox" checked={freeOnly} onChange={(event) => setFreeOnly(event.target.checked)} /> Free-only models and routes</label>
+                  <label><input aria-label="Local-only mode" type="checkbox" checked={localOnly} onChange={(event) => setLocalOnly(event.target.checked)} /> Local-only inference</label>
+                  <p>Free-only permits Ollama and catalog-verified free OpenRouter routes. OpenRouter free models have variable availability and rate limits; PR-0 will not switch them to paid models.</p>
+                </div>
+                {allowedFallbackOptions.length > 0 && <fieldset className="provider-fallback-options"><legend>Allowed fallback providers</legend>{allowedFallbackOptions.map((provider) => <label key={provider.id}><input type="checkbox" checked={fallbackProviders.includes(provider.id)} onChange={(event) => setFallbackProviders((current) => event.target.checked ? [...current, provider.id] : current.filter((id) => id !== provider.id))} /> {provider.id} · {provider.defaultModel ?? "selected model"} · {provider.id === "ollama" ? "local" : "hosted API"}</label>)}<small>Fallback is attempted only for transient transport, rate-limit, or quota errors, and only before a model response/tool call has been returned.</small></fieldset>}
+                {hostedRouteSelected && <label className="hosted-consent"><input aria-label="Authorize hosted provider data sharing for this run" type="checkbox" checked={hostedConsent} onChange={(event) => setHostedConsent(event.target.checked)} /> I authorize this task or plan run to send task text, conversation history, project memory, and model-requested file/tool results to the selected hosted provider and any fallback I allowed. Consent is cleared after this request.</label>}
+                {activeProvider?.capabilities && <p className="provider-capabilities">Capabilities: tool calling {activeProvider.capabilities.toolCalling ? "supported" : "unsupported"}; streaming {activeProvider.capabilities.streaming ? "supported" : "not used"}; cancellation {activeProvider.capabilities.supportsCancellation ? "supported" : "unsupported"}{activeProvider.capabilities.maxContextTokens ? `; context up to ${activeProvider.capabilities.maxContextTokens.toLocaleString()} tokens` : ""}.</p>}
+                {activeProvider?.error && <p className="inline-warning" role="status">{activeProvider.error}</p>}
                 {providerId !== "mock" && !providerReady && <p className="inline-warning" role="status">{providerBlockedReason()} No provider fallback will be selected.</p>}
               </details>
               <label className="sr-only" htmlFor="task-prompt">Development task</label>

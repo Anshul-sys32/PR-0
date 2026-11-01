@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AgentExecutor } from "@pr-0/agent-core";
 import type { AgentTask } from "@pr-0/shared";
 import type { ModelAdapter, ModelRequest, ModelRequestOptions, ModelResponse } from "@pr-0/model-gateway";
+import { RoutedModelAdapter } from "@pr-0/model-gateway";
 
 class ScriptedModel implements ModelAdapter {
   readonly providerId = "test";
@@ -77,6 +78,35 @@ describe("agent tool loop", () => {
     const task: AgentTask = { id: "task-auth", projectId: "project-1", title: "Auth failure", description: "Fail without retry", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
     await expect(new AgentExecutor(model).execute(task, { systemPrompt: "", maxRetries: 4 })).rejects.toThrow("401");
     expect(attempts).toBe(1);
+  });
+
+  it("does not duplicate tool execution when an explicitly allowed fallback responds", async () => {
+    let primaryAttempts = 0;
+    const primary: ModelAdapter = {
+      providerId: "openrouter",
+      getCapabilities: () => ({ streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }),
+      generate: async (): Promise<ModelResponse> => { primaryAttempts++; throw new Error("OpenRouter HTTP 429: rate limited"); }
+    };
+    const fallbackResponses: ModelResponse[] = [
+      { content: "", toolCalls: [{ id: "route-read-1", name: "filesystem.read", input: { path: "README.md" } }], finishReason: "tool_calls", usage: {} },
+      { content: "Read through local fallback", toolCalls: [], finishReason: "stop", usage: {} }
+    ];
+    const fallback: ModelAdapter = {
+      providerId: "ollama",
+      getCapabilities: () => ({ streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }),
+      generate: async (): Promise<ModelResponse> => fallbackResponses.shift() ?? { content: "unexpected", toolCalls: [], finishReason: "stop", usage: {} }
+    };
+    const routed = new RoutedModelAdapter({ adapter: primary, modelId: "openrouter/free", free: true }, [{ adapter: fallback, modelId: "qwen-coder", free: true }], { localOnly: false, freeOnly: true, hostedConsent: true });
+    const task: AgentTask = { id: "task-route", projectId: "project-1", title: "Read README", description: "Read README", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
+    let toolInvocations = 0;
+    const result = await new AgentExecutor(routed).execute(task, {
+      systemPrompt: "Use registered tools only",
+      tools: [{ name: "filesystem.read", description: "Read a workspace file", parameters: {}, inputSchema: { parse: (value) => value } }],
+      executeTool: async () => { toolInvocations++; return "README contents"; }
+    });
+    expect(result.summary).toBe("Read through local fallback");
+    expect(toolInvocations).toBe(1);
+    expect(primaryAttempts).toBe(2);
   });
 
   it("passes cancellation to the provider and stops before dispatching tools", async () => {

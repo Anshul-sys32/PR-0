@@ -137,6 +137,145 @@ export class GeminiAdapter implements ModelAdapter {
   }
 }
 
+const openRouterCatalogSchema = z.object({ data: z.array(z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  context_length: z.number().optional(),
+  pricing: z.object({ prompt: z.string(), completion: z.string(), request: z.string().optional() }).passthrough(),
+  supported_parameters: z.array(z.string()).default([]),
+  architecture: z.object({ input_modalities: z.array(z.string()).default([]), output_modalities: z.array(z.string()).default([]) }).passthrough().optional(),
+  top_provider: z.object({ max_completion_tokens: z.number().nullable().optional() }).passthrough().optional()
+})) });
+const openRouterResponseSchema = z.object({
+  model: z.string().optional(),
+  choices: z.array(z.object({
+    finish_reason: z.string().nullable().optional(),
+    message: z.object({
+      content: z.union([z.string(), z.null()]).optional(),
+      tool_calls: z.array(z.object({ id: z.string(), type: z.string().optional(), function: z.object({ name: z.string(), arguments: z.string() }) })).optional()
+    }).passthrough()
+  }).passthrough()).default([]),
+  usage: z.object({ prompt_tokens: z.number().optional(), completion_tokens: z.number().optional(), cost: z.number().optional() }).passthrough().optional()
+}).passthrough();
+export type OpenRouterModel = {
+  id: string;
+  name: string;
+  description?: string;
+  contextLength?: number;
+  maxOutputTokens?: number;
+  promptPriceUsdPerToken: number | null;
+  completionPriceUsdPerToken: number | null;
+  supportsTools: boolean;
+  free: boolean;
+};
+export type OpenRouterAvailability = { status: "configured"; models: OpenRouterModel[] } | { status: "authentication_required" | "rate_limited" | "unavailable" | "unsupported"; models: []; error: string };
+
+function normalizedOpenRouterModel(model: z.infer<typeof openRouterCatalogSchema>["data"][number]): OpenRouterModel {
+  const promptPrice = Number(model.pricing.prompt);
+  const completionPrice = Number(model.pricing.completion);
+  const requestPrice = model.pricing.request === undefined ? Number.NaN : Number(model.pricing.request);
+  const validPrices = Number.isFinite(promptPrice) && Number.isFinite(completionPrice);
+  return {
+    id: model.id,
+    name: model.name,
+    ...(model.description ? { description: model.description.slice(0, 300) } : {}),
+    ...(model.context_length ? { contextLength: model.context_length } : {}),
+    ...(model.top_provider?.max_completion_tokens ? { maxOutputTokens: model.top_provider.max_completion_tokens } : {}),
+    promptPriceUsdPerToken: validPrices ? promptPrice : null,
+    completionPriceUsdPerToken: validPrices ? completionPrice : null,
+    supportsTools: model.supported_parameters.includes("tools"),
+    free: validPrices && Number.isFinite(requestPrice) && promptPrice === 0 && completionPrice === 0 && requestPrice === 0
+  };
+}
+
+export class OpenRouterAdapter implements ModelAdapter {
+  readonly providerId = "openrouter";
+  private catalog?: OpenRouterModel[];
+  private catalogFetchedAt = 0;
+  constructor(private readonly apiKey: string, private readonly defaultModel?: string, private readonly fetcher: typeof fetch = fetch) {
+    if (!apiKey.trim()) throw new Error("OpenRouter API key is required");
+  }
+  getCapabilities(modelId: string): ModelCapabilities {
+    const model = this.catalog?.find((candidate) => candidate.id === modelId);
+    return { streaming: false, toolCalling: model?.supportsTools ?? true, structuredOutput: false, vision: false, supportsCancellation: true, maxContextTokens: model?.contextLength, maxOutputTokens: model?.maxOutputTokens };
+  }
+  async listModels(options: { freeOnly?: boolean; refresh?: boolean; timeoutMs?: number } = {}): Promise<OpenRouterAvailability> {
+    const cachedCatalog = this.catalog;
+    if (!options.refresh && cachedCatalog && Date.now() - this.catalogFetchedAt < 5 * 60_000) {
+      return { status: "configured", models: this.selectModels(cachedCatalog, options.freeOnly ?? false) };
+    }
+    let response: Response;
+    try {
+      response = await timedFetch(this.fetcher, "https://openrouter.ai/api/v1/models?output_modalities=text&supported_parameters=tools", {
+        method: "GET", headers: { authorization: `Bearer ${this.apiKey}`, accept: "application/json" }
+      }, { timeoutMs: options.timeoutMs ?? 8_000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "network failure";
+      return { status: "unavailable", models: [], error: message.includes("timed out") ? "OpenRouter model catalog request timed out" : "Cannot reach the OpenRouter model catalog" };
+    }
+    if (response.status === 401 || response.status === 403) return { status: "authentication_required", models: [], error: "OpenRouter rejected the configured API key" };
+    if (response.status === 429) return { status: "rate_limited", models: [], error: "OpenRouter model catalog is rate limited; try again later" };
+    if (!response.ok) return { status: response.status === 404 ? "unsupported" : "unavailable", models: [], error: `OpenRouter model catalog request failed with HTTP ${response.status}` };
+    try {
+      const data = openRouterCatalogSchema.parse(await response.json());
+      const models = data.data.map(normalizedOpenRouterModel);
+      this.catalog = models;
+      this.catalogFetchedAt = Date.now();
+      return { status: "configured", models: this.selectModels(models, options.freeOnly ?? false) };
+    } catch {
+      return { status: "unsupported", models: [], error: "OpenRouter returned an unsupported model catalog response" };
+    }
+  }
+  private selectModels(models: OpenRouterModel[], freeOnly: boolean): OpenRouterModel[] {
+    return models.filter((model) => model.supportsTools && (!freeOnly || model.free));
+  }
+  async generate(request: ModelRequest, options: ModelRequestOptions = {}): Promise<ModelResponse> {
+    const model = request.model ?? this.defaultModel;
+    if (!model) throw new Error("Select an OpenRouter model or configure OPENROUTER_MODEL");
+    const tools = request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters ?? { type: "object", properties: {} } } }));
+    const messages = [
+      { role: "system", content: request.system },
+      ...request.messages.map((message) => message.role === "assistant" && message.toolCalls?.length
+        ? { role: "assistant", content: message.content || null, tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.input) } })) }
+        : message.role === "tool"
+          ? { role: "tool", tool_call_id: message.toolCallId, content: message.content }
+          : { role: message.role, content: message.content })
+    ];
+    const response = await timedFetch(this.fetcher, "https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json", "http-referer": "https://github.com/Anshul-sys32/PR-0", "x-openrouter-title": "PR-0" },
+      body: JSON.stringify({ model, messages, max_tokens: 4096, ...(tools?.length ? { tools, tool_choice: "auto" } : {}), stream: false })
+    }, options);
+    if (!response.ok) {
+      const status = response.status;
+      const category = status === 401 || status === 403 ? "authentication or access denied" : status === 402 ? "credit limit exhausted" : status === 404 ? "model unavailable" : status === 429 ? "rate limited" : status >= 500 ? "provider service error" : "request rejected";
+      throw new Error(`OpenRouter HTTP ${status}: ${category}`);
+    }
+    let payload: unknown;
+    try { payload = await response.json(); } catch { throw new Error("OpenRouter returned malformed JSON"); }
+    const data = openRouterResponseSchema.safeParse(payload);
+    if (!data.success || !data.data.choices[0]) throw new Error("OpenRouter returned an unsupported chat completion response");
+    const finishReason = data.data.choices[0].finish_reason;
+    if (finishReason === "length") throw new Error("OpenRouter response reached the 4096-token output limit");
+    if (finishReason === "content_filter") throw new Error("OpenRouter filtered the model response");
+    if (finishReason === "error") throw new Error("OpenRouter provider returned an unsuccessful response");
+    const message = data.data.choices[0].message;
+    const toolCalls: ToolCall[] = (message.tool_calls ?? []).map((call) => {
+      let input: unknown;
+      try { input = JSON.parse(call.function.arguments) as unknown; } catch { throw new Error("OpenRouter returned malformed tool arguments"); }
+      return { id: call.id, name: call.function.name, input };
+    });
+    return {
+      content: typeof message.content === "string" ? message.content : "",
+      toolCalls,
+      finishReason: toolCalls.length ? "tool_calls" : "stop",
+      usage: { inputTokens: data.data.usage?.prompt_tokens, outputTokens: data.data.usage?.completion_tokens, estimatedCostUsd: data.data.usage?.cost },
+      providerData: { provider: "openrouter", model: data.data.model ?? model }
+    };
+  }
+}
+
 const ollamaResponseSchema = z.object({ message: z.object({ content: z.string().default(""), tool_calls: z.array(z.object({ id: z.string().optional(), function: z.object({ name: z.string(), arguments: z.unknown() }) })).default([]) }), prompt_eval_count: z.number().optional(), eval_count: z.number().optional() }).passthrough();
 const ollamaTagsSchema = z.object({ models: z.array(z.object({ name: z.string().min(1) }).passthrough()) }).passthrough();
 const timedOllamaTextFetch = async (fetcher: typeof fetch, input: RequestInfo | URL, init: RequestInit, options: ModelRequestOptions, maxBytes: number): Promise<{ response: Response; text: string }> => {
@@ -224,4 +363,58 @@ export class ProviderRegistry {
   get(providerId: string): ModelAdapter { const adapter = this.adapters.get(providerId); if (!adapter) throw new Error(`Provider ${providerId} is not configured`); return adapter; }
   register(adapter: ModelAdapter): void { this.adapters.set(adapter.providerId, adapter); }
   list(): string[] { return [...this.adapters.keys()]; }
+}
+
+export type ModelRouteCandidate = { adapter: ModelAdapter; modelId: string; free: boolean };
+export type ModelRoutePolicy = { localOnly: boolean; freeOnly: boolean; hostedConsent: boolean };
+
+export class RoutedModelAdapter implements ModelAdapter {
+  readonly providerId: string;
+  readonly mayUseHostedProvider: boolean;
+  lastUsedProviderId: string;
+  lastUsedModelId: string;
+  constructor(private readonly primary: ModelRouteCandidate, private readonly fallbacks: ModelRouteCandidate[], private readonly policy: ModelRoutePolicy) {
+    this.providerId = primary.adapter.providerId;
+    this.mayUseHostedProvider = [primary, ...fallbacks].some((candidate) => candidate.adapter.providerId !== "ollama" && candidate.adapter.providerId !== "mock");
+    this.lastUsedProviderId = primary.adapter.providerId;
+    this.lastUsedModelId = primary.modelId;
+    for (const candidate of [primary, ...fallbacks]) this.assertAllowed(candidate);
+  }
+  getCapabilities(modelId: string): ModelCapabilities { return this.primary.adapter.getCapabilities(modelId || this.primary.modelId); }
+  private assertAllowed(candidate: ModelRouteCandidate): void {
+    const local = candidate.adapter.providerId === "ollama" || candidate.adapter.providerId === "mock";
+    if (this.policy.localOnly && !local) throw new Error("Local-only mode blocks hosted provider requests and fallbacks");
+    if (!local && !this.policy.hostedConsent) throw new Error("Explicit hosted-provider consent is required before project context can be sent");
+    if (this.policy.freeOnly && !local && !candidate.free) throw new Error("Free-only mode blocks paid or unverified provider models");
+  }
+  private isFallbackEligible(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /(?:HTTP\s+(?:408|402|429|500|502|503|504)\b|timed? out|network|fetch failed|ECONNRESET|ECONNREFUSED|EAI_AGAIN)/i.test(message);
+  }
+  async generate(request: ModelRequest, options: ModelRequestOptions = {}): Promise<ModelResponse> {
+    const candidates = [this.primary, ...this.fallbacks];
+    const failures: string[] = [];
+    for (let index = 0; index < candidates.length; index++) {
+      options.signal?.throwIfAborted();
+      const candidate = candidates[index]!;
+      try {
+        const response = await candidate.adapter.generate({ ...request, model: candidate.modelId }, options);
+        this.lastUsedProviderId = candidate.adapter.providerId;
+        this.lastUsedModelId = typeof response.providerData === "object" && response.providerData !== null && "model" in response.providerData && typeof response.providerData.model === "string"
+          ? response.providerData.model
+          : candidate.modelId;
+        return { ...response, providerData: { ...(typeof response.providerData === "object" && response.providerData !== null ? response.providerData : {}), provider: candidate.adapter.providerId, model: this.lastUsedModelId } };
+      } catch (error) {
+        if (options.signal?.aborted) throw error;
+        const detail = error instanceof Error ? error.message.slice(0, 240) : "provider request failed";
+        failures.push(`${candidate.adapter.providerId}/${candidate.modelId}: ${detail}`);
+        if (!this.isFallbackEligible(error)) {
+          if (failures.length === 1) throw error;
+          throw new Error(`Fallback stopped after a non-retryable provider error. ${failures.join("; ")}`);
+        }
+        if (index === candidates.length - 1) throw new Error(`All explicitly allowed provider routes failed. ${failures.join("; ")}`);
+      }
+    }
+    throw new Error(`All explicitly allowed provider routes failed. ${failures.join("; ")}`);
+  }
 }
