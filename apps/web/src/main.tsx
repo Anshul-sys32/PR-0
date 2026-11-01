@@ -4,7 +4,8 @@ import "./styles.css";
 import "./workspace.css";
 
 type Project = { id: string; name: string; rootPath: string };
-type Task = { id: string; title: string; status: string; role: string; description: string; execution?: { provider: string; model: string; result: { summary: string; status: string } } | null };
+type Task = { id: string; title: string; status: string; role: string; description: string; retryAttempts?: number; execution?: { provider: string; model: string; retryAttempts: number; result: { summary: string; status: string } } | null };
+type TaskPlan = { id: string; projectId: string; summary: string; tasks: Task[] };
 type Provider = { id: string; configured: boolean; defaultModel: string | null };
 type Conversation = { id: string; projectId: string; createdAt: string };
 type ChatMessage = { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string };
@@ -52,6 +53,8 @@ function App() {
   const [editingTodoId, setEditingTodoId] = useState<string>();
   const [planSummary, setPlanSummary] = useState("");
   const [planning, setPlanning] = useState(false);
+  const [activePlan, setActivePlan] = useState<TaskPlan | null>(null);
+  const [planRunActive, setPlanRunActive] = useState(false);
   const load = async (preferredProject?: Project) => { const data = await api<{ projects: Project[] }>("/projects"); setProjects(data.projects); const project = preferredProject ?? active ?? data.projects[0]; setActive(project); if (!project) {
     setTasks([]); setResult(""); setConversations([]); setActiveConversationId(undefined); setMessages([]); setApprovals([]); setTerminalSessions([]); setMemories([]); setUsage(undefined); setTodos([]);
     return;
@@ -162,6 +165,12 @@ function App() {
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not open file"); }
   };
   useEffect(() => { if (active) void loadWorkspaceDirectory(explorerPath).catch((error: Error) => setStatus(error.message)); }, [active?.id]);
+  useEffect(() => {
+    if (activePlan && activePlan.projectId !== active?.id) {
+      setActivePlan(null);
+      setPlanRunActive(false);
+    }
+  }, [active?.id, activePlan?.projectId]);
   const decideApproval = async (approval: Approval, approved: boolean) => {
     try {
       await api<{ ok: boolean }>(`/approvals/${approval.id}/decision`, { method: "POST", body: JSON.stringify({ approved }) });
@@ -248,14 +257,53 @@ function App() {
     if (!active || !message.trim()) return;
     setPlanning(true); setStatus("Generating a task plan…");
     try {
-      const data = await api<{ plan: { summary: string; tasks: Task[] } }>(`/projects/${active.id}/plan`, { method: "POST", body: JSON.stringify({ description: message.trim(), providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      const data = await api<{ plan: TaskPlan }>(`/projects/${active.id}/plan`, { method: "POST", body: JSON.stringify({ description: message.trim(), providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
       setPlanSummary(data.plan.summary);
+      setActivePlan(data.plan);
+      setPlanRunActive(false);
       setTasks((current) => [...data.plan.tasks, ...current]);
       setMessage("");
       setStatus(`Plan created with ${data.plan.tasks.length} tasks. Review the dependency queue before running them.`);
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not generate task plan"); }
     finally { setPlanning(false); }
   };
+  const runPlan = async () => {
+    if (!activePlan) return;
+    setStatus("Starting task plan…");
+    try {
+      await api<{ planId: string; status: "running"; taskIds: string[] }>(`/task-plans/${activePlan.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
+      setPlanRunActive(true);
+      setStatus("Plan is running. Progress updates automatically.");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not run task plan"); }
+  };
+  useEffect(() => {
+    if (!activePlan || !planRunActive) return;
+    const pollPlan = async () => {
+      try {
+        const data = await api<{ plan: TaskPlan }>(`/task-plans/${activePlan.id}`);
+        setActivePlan(data.plan);
+        setTasks((current) => current.map((task) => data.plan.tasks.find((plannedTask) => plannedTask.id === task.id) ?? task));
+        const completed = data.plan.tasks.filter((task) => task.status === "completed").length;
+        const terminal = data.plan.tasks.every((task) => ["completed", "failed", "blocked", "cancelled"].includes(task.status));
+        if (terminal) {
+          setPlanRunActive(false);
+          setStatus(`Plan finished: ${completed}/${data.plan.tasks.length} tasks completed.`);
+        }
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not refresh plan progress");
+      }
+    };
+    void pollPlan();
+    const timer = setInterval(() => { void pollPlan(); }, 1000);
+    return () => clearInterval(timer);
+  }, [activePlan?.id, planRunActive]);
+  const visiblePlan = activePlan?.projectId === active?.id ? activePlan : null;
+  const completedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "completed").length ?? 0;
+  const runningPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "running").length ?? 0;
+  const waitingPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "pending" || task.status === "ready").length ?? 0;
+  const failedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "failed").length ?? 0;
+  const blockedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "blocked").length ?? 0;
+  const cancelledPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "cancelled").length ?? 0;
   return (
     <div className="shell">
       <aside>
@@ -319,14 +367,15 @@ function App() {
                 <select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock (no cost)" : provider.id === "ollama" ? "Ollama (local)" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id}>{id} (configure server credentials)</option>)}</select>
                 {providerId !== "mock" && <input aria-label="Model id" placeholder="Model id (or server default)" value={modelId} onChange={(event) => setModelId(event.target.value)} />}
               </div>
-              <div className="compose-row"><textarea aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="What should the team build or change?" /><button onClick={() => void send()} disabled={!active || !message.trim()}>Send ↵</button></div>
+              <div className="compose-row"><textarea aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="What should the team build or change?" /><button onClick={() => void generatePlan()} disabled={!active || !message.trim() || planning || planRunActive}>{planning ? "Planning…" : "Plan"}</button><button onClick={() => void send()} disabled={!active || !message.trim()}>Send ↵</button></div>
             </div>
           </section>
           <section className="activity card">
             <div className="card-head"><h2>Agent activity</h2><span className="live">● live</span></div>
+            {visiblePlan && <div className="plan-progress"><div className="plan-progress-copy"><b>{visiblePlan.summary || planSummary}</b><small>{completedPlanTasks}/{visiblePlan.tasks.length} completed · {runningPlanTasks} running · {waitingPlanTasks} waiting · {failedPlanTasks} failed · {blockedPlanTasks} blocked · {cancelledPlanTasks} cancelled</small></div><progress aria-label="Task plan completion" max={visiblePlan.tasks.length} value={completedPlanTasks} /><button disabled={planRunActive || waitingPlanTasks === 0} onClick={() => void runPlan()}>{planRunActive ? "Running…" : "Run plan"}</button></div>}
             <div className="agent"><div className="avatar">O</div><div><b>Orchestrator</b><small>Routes plans and verifies completion</small></div><span>{runningTaskId ? "running" : "idle"}</span></div>
             <h3>Execution queue</h3>
-            {tasks.length ? tasks.map((task) => <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}</small></div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>) : <div className="empty compact">No execution tasks yet.</div>}
+            {tasks.length ? tasks.map((task) => <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}{(task.retryAttempts ?? task.execution?.retryAttempts ?? 0) > 0 ? ` · ${task.retryAttempts ?? task.execution?.retryAttempts} retry attempts` : ""}</small></div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>) : <div className="empty compact">No execution tasks yet.</div>}
           </section>
         </div>
         <section className="bottom card">

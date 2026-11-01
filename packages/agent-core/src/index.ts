@@ -10,7 +10,7 @@ const waitForRetry = (milliseconds: number, signal?: AbortSignal): Promise<void>
 });
 
 export interface AgentTool { name: string; description: string; parameters: Record<string, unknown>; inputSchema: { parse(input: unknown): unknown } }
-export interface ExecutionContext { systemPrompt: string; modelId?: string; history?: ModelMessage[]; tools?: AgentTool[]; executeTool?: (name: string, input: unknown) => Promise<unknown>; maxSteps?: number; maxRetries?: number; signal?: AbortSignal; onUsage?: (usage: { inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number }) => void; }
+export interface ExecutionContext { systemPrompt: string; modelId?: string; history?: ModelMessage[]; tools?: AgentTool[]; executeTool?: (name: string, input: unknown) => Promise<unknown>; maxSteps?: number; maxRetries?: number; signal?: AbortSignal; onUsage?: (usage: { inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number }) => void; onRetry?: (attempt: number) => void; }
 export class AgentExecutor {
   constructor(private readonly model: ModelAdapter) {}
   async execute(task: AgentTask, context: ExecutionContext): Promise<AgentResult> {
@@ -31,6 +31,7 @@ export class AgentExecutor {
           if (!transient || retriesUsed >= Math.min(Math.max(context.maxRetries ?? 0, 0), 5)) throw error;
           const backoffMs = Math.min(100 * (2 ** retriesUsed), 1_000);
           retriesUsed++;
+          context.onRetry?.(retriesUsed);
           await waitForRetry(backoffMs, context.signal);
         }
       }

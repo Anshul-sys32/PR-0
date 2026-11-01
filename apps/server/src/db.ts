@@ -11,7 +11,7 @@ export interface Approval { id: string; taskId: string; action: string; risk: st
 export interface ApprovalSummary extends Approval { operationKind: PendingOperation["kind"] | null }
 export interface PendingOperation { id: string; approvalId: string; kind: "filesystem.write" | "terminal.run"; payload: string; status: "pending" | "executed" | "rejected" | "failed"; createdAt: string }
 export interface TerminalSession { id: string; projectId: string; taskId: string; workingDirectory: string; executable: string; args: string[]; status: "running" | "exited" | "failed" | "stopped"; output: string; exitCode: number | null; createdAt: string; updatedAt: string }
-export interface TaskExecutionRecord { taskId: string; provider: string; model: string; result: AgentResult; createdAt: string }
+export interface TaskExecutionRecord { taskId: string; provider: string; model: string; result: AgentResult; retryAttempts: number; createdAt: string }
 export interface ProjectMemory { id: string; projectId: string; kind: ProjectMemoryKind; content: string; createdAt: string; updatedAt: string }
 export interface ProjectUsageSummary { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; unknownCostRequests: number }
 export interface ManualTodo { id: string; projectId: string; title: string; description: string; priority: number; acceptanceCriteria: string[]; status: "open" | "completed"; createdAt: string; updatedAt: string }
@@ -32,6 +32,7 @@ export class DatabaseService {
     CREATE TABLE IF NOT EXISTS terminal_sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id TEXT NOT NULL, working_directory TEXT NOT NULL, executable TEXT NOT NULL, args TEXT NOT NULL, status TEXT NOT NULL, output TEXT NOT NULL, exit_code INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS usage_records (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input_tokens INTEGER, output_tokens INTEGER, estimated_cost_usd REAL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS task_executions (task_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS task_retry_attempts (task_id TEXT NOT NULL, attempt INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (task_id, attempt));
     CREATE TABLE IF NOT EXISTS project_memory (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS manual_todos (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, priority INTEGER NOT NULL, acceptance_criteria TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS task_plans (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, description TEXT NOT NULL, summary TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -129,12 +130,17 @@ export class DatabaseService {
     const record = { taskId, provider, model, result: parsed, createdAt: this.now() };
     this.db.prepare("INSERT INTO task_executions VALUES (?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET provider = excluded.provider, model = excluded.model, result = excluded.result, created_at = excluded.created_at")
       .run(record.taskId, record.provider, record.model, JSON.stringify(record.result), record.createdAt);
-    return record;
+    return { ...record, retryAttempts: this.getTaskRetryAttempts(taskId) };
+  }
+  recordTaskRetryAttempt(taskId: string, attempt: number): void { this.db.prepare("INSERT OR IGNORE INTO task_retry_attempts VALUES (?, ?, ?)").run(taskId, attempt, this.now()); }
+  getTaskRetryAttempts(taskId: string): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS attempts FROM task_retry_attempts WHERE task_id = ?").get(taskId) as { attempts: number };
+    return Number(row.attempts);
   }
   getTaskExecution(taskId: string): TaskExecutionRecord | undefined {
     const row = this.db.prepare("SELECT task_id AS taskId, provider, model, result, created_at AS createdAt FROM task_executions WHERE task_id = ?").get(taskId) as Record<string, unknown> | undefined;
     if (!row) return undefined;
-    return { taskId: String(row.taskId), provider: String(row.provider), model: String(row.model), result: agentResultSchema.parse(JSON.parse(String(row.result))), createdAt: String(row.createdAt) };
+    return { taskId: String(row.taskId), provider: String(row.provider), model: String(row.model), result: agentResultSchema.parse(JSON.parse(String(row.result))), retryAttempts: this.getTaskRetryAttempts(taskId), createdAt: String(row.createdAt) };
   }
   createProjectMemory(projectId: string, kind: ProjectMemoryKind, content: string): ProjectMemory {
     const now = this.now(); const memory: ProjectMemory = { id: randomUUID(), projectId, kind, content, createdAt: now, updatedAt: now };

@@ -50,6 +50,7 @@ describe("agent tool loop", () => {
 
   it("retries transient provider failures only within the configured bound", async () => {
     let attempts = 0;
+    const retryEvents: number[] = [];
     const model: ModelAdapter = {
       providerId: "retry-test",
       getCapabilities: () => ({ streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }),
@@ -60,9 +61,10 @@ describe("agent tool loop", () => {
       }
     };
     const task: AgentTask = { id: "task-retry", projectId: "project-1", title: "Retry", description: "Retry a transient outage", role: "orchestrator", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0, createdAt: new Date().toISOString() };
-    const result = await new AgentExecutor(model).execute(task, { systemPrompt: "", maxRetries: 2 });
+    const result = await new AgentExecutor(model).execute(task, { systemPrompt: "", maxRetries: 2, onRetry: (attempt) => retryEvents.push(attempt) });
     expect(result.summary).toBe("Recovered");
     expect(attempts).toBe(3);
+    expect(retryEvents).toEqual([1, 2]);
   });
 
   it("does not retry deterministic authentication failures", async () => {

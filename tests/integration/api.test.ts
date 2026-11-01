@@ -35,6 +35,17 @@ class RecordingModelAdapter implements ModelAdapter {
   }
 }
 
+class RetryingTestAdapter implements ModelAdapter {
+  readonly providerId = "ollama";
+  attempts = 0;
+  getCapabilities() { return { streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }; }
+  async generate(): Promise<ModelResponse> {
+    this.attempts++;
+    if (this.attempts < 3) throw new Error("Provider HTTP 503: temporarily unavailable");
+    return { content: "Recovered after transient failures", toolCalls: [], finishReason: "stop", usage: {} };
+  }
+}
+
 class PlanResponseAdapter implements ModelAdapter {
   readonly providerId = "ollama";
   constructor(private readonly content: string) {}
@@ -229,6 +240,9 @@ describe("local workflow", () => {
       const planId = generated.json().plan.id;
       const started = await planApp.inject({ method: "POST", url: `/api/task-plans/${planId}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
       expect(started.statusCode).toBe(202);
+      const duplicateStart = await planApp.inject({ method: "POST", url: `/api/task-plans/${planId}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      expect(duplicateStart.statusCode).toBe(409);
+      expect(duplicateStart.json().error).toContain("already running");
       let state = (await planApp.inject(`/api/task-plans/${planId}`)).json().plan;
       for (let attempt = 0; attempt < 100 && state.tasks.some((task: { status: string }) => !["completed", "failed", "blocked", "cancelled"].includes(task.status)); attempt++) {
         await delay(10);
@@ -237,6 +251,27 @@ describe("local workflow", () => {
       expect(state.tasks.map((task: { status: string }) => task.status)).toEqual(["completed", "completed", "completed", "completed"]);
       expect(adapter.maxConcurrentTaskCalls).toBe(2);
     } finally { await planApp.close(); }
+  });
+
+  it("persists transient provider retry attempts and returns their count", async () => {
+    const databaseUrl = `file:${join(directory, "retry-accounting.db")}`;
+    const adapter = new RetryingTestAdapter();
+    const retryApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: databaseUrl, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 1, MAX_TOOL_STEPS_PER_TASK: 40, MAX_RETRIES_PER_TASK: 2 }, undefined, [adapter]);
+    let taskId = "";
+    try {
+      const project = (await retryApp.inject({ method: "POST", url: "/api/projects", payload: { name: "retry-accounting", rootPath: directory } })).json().project;
+      const conversation = (await retryApp.inject({ method: "POST", url: "/api/conversations", payload: { projectId: project.id } })).json().conversation;
+      const task = (await retryApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Retry transient provider errors" } })).json().task;
+      taskId = task.id;
+      const run = await retryApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      expect(run.statusCode).toBe(200);
+      expect(adapter.attempts).toBe(3);
+      const savedTask = (await retryApp.inject(`/api/projects/${project.id}/tasks`)).json().tasks.find((value: { id: string }) => value.id === task.id);
+      expect(savedTask).toMatchObject({ status: "completed", retryAttempts: 2, execution: { retryAttempts: 2, result: { status: "completed" } } });
+    } finally { await retryApp.close(); }
+    const reopenedDatabase = new DatabaseService(databaseUrl);
+    try { expect(reopenedDatabase.getTaskRetryAttempts(taskId)).toBe(2); expect(reopenedDatabase.getTaskExecution(taskId)?.retryAttempts).toBe(2); }
+    finally { reopenedDatabase.close(); }
   });
 
   it("rejects malformed or cyclic model plans before persisting task rows", async () => {
@@ -312,6 +347,9 @@ describe("local workflow", () => {
       expect(descendant.status).toBe("pending");
       const run = cancellableApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
       await adapter.started;
+      const conflictingRun = await cancellableApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      expect(conflictingRun.statusCode).toBe(409);
+      expect(conflictingRun.json().error).toContain("Cannot run a running task");
       expect(adapter.requests[0]?.system).toContain("ROLE: BACKEND ENGINEER");
       const cancellation = await cancellableApp.inject({ method: "POST", url: `/api/tasks/${task.id}/cancel` });
       expect(cancellation.statusCode).toBe(200);
