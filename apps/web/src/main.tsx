@@ -1,7 +1,11 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { Sidebar, type WorkspaceView } from "./components/Sidebar.js";
+import { ApprovalInbox, TaskQueuePanel } from "./components/WorkspacePanels.js";
+import { MessageText } from "./components/MessageText.js";
 import "./styles.css";
 import "./workspace.css";
+import "./ui.css";
 
 type Project = { id: string; name: string; rootPath: string };
 type Task = { id: string; title: string; status: string; role: string; description: string; dependencies?: string[]; retryAttempts?: number; execution?: { provider: string; model: string; retryAttempts: number; result: { summary: string; status: string } } | null };
@@ -26,7 +30,17 @@ type UsageSummary = { requests: number; inputTokens: number; outputTokens: numbe
 type ManualTodo = { id: string; projectId: string; title: string; description: string; priority: number; acceptanceCriteria: string[]; status: "open" | "completed"; createdAt: string; updatedAt: string };
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const headers = new Headers(init?.headers); if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json"); const res = await fetch(`/api${path}`, { ...init, headers }); const data = await res.json() as T & { error?: string }; if (!res.ok) throw new Error(data.error ?? "Request failed"); return data; };
 function App() {
-  const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connected to local workspace"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "mock", configured: true, defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("mock"); const [modelId, setModelId] = useState("");
+  const [activeView, setActiveView] = useState<WorkspaceView>("agent");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectPath, setNewProjectPath] = useState("");
+  const [projectCreating, setProjectCreating] = useState(false);
+  const [projectError, setProjectError] = useState("");
+  const [approvalBusyId, setApprovalBusyId] = useState<string>();
+  const [taskCreating, setTaskCreating] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connecting to local workspace…"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "mock", configured: true, defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("mock"); const [modelId, setModelId] = useState("");
   const [agentRole, setAgentRole] = useState("orchestrator");
   const [runningTaskId, setRunningTaskId] = useState<string>();
   const [dependencyId, setDependencyId] = useState("");
@@ -52,6 +66,8 @@ function App() {
   const [gitHistoryTruncated, setGitHistoryTruncated] = useState(false);
   const [gitCheckpoints, setGitCheckpoints] = useState<GitCheckpoint[]>([]);
   const [rollbackPreview, setRollbackPreview] = useState<GitRollbackPreview | null>(null);
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false);
+  const [rollbackExecuting, setRollbackExecuting] = useState(false);
   const [memories, setMemories] = useState<MemoryNote[]>([]);
   const [memoryKind, setMemoryKind] = useState<MemoryNote["kind"]>("fact");
   const [memoryContent, setMemoryContent] = useState("");
@@ -103,10 +119,38 @@ function App() {
   setUsage(usageData.usage);
   setTodos(todoData.todos);
   };
-  useEffect(() => { void load().catch((error: Error) => setStatus(error.message)); void api<{ providers: Provider[]; unavailable: string[] }>("/providers").then((data) => { setProviders(data.providers); setUnavailableProviders(data.unavailable); }).catch((error: Error) => setStatus(error.message)); }, []);
-  const createProject = async () => { const rootPath = window.prompt("Workspace directory", "."); const name = window.prompt("Project name", "My workspace"); if (!rootPath || !name) return; try { const { project } = await api<{ project: Project }>("/projects", { method: "POST", body: JSON.stringify({ name, rootPath }) }); await load(project); } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create project"); } };
+  useEffect(() => { void load().then(() => setStatus("Connected to local API")).catch((error: Error) => setStatus(error.message)); void api<{ providers: Provider[]; unavailable: string[] }>("/providers").then((data) => { setProviders(data.providers); setUnavailableProviders(data.unavailable); }).catch((error: Error) => setStatus(error.message)); }, []);
+  useEffect(() => {
+    if (!projectDialogOpen && !rollbackConfirmOpen) return;
+    const handleDialogKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || projectCreating || rollbackExecuting) return;
+      setProjectDialogOpen(false);
+      setRollbackConfirmOpen(false);
+    };
+    window.addEventListener("keydown", handleDialogKey);
+    return () => window.removeEventListener("keydown", handleDialogKey);
+  }, [projectDialogOpen, rollbackConfirmOpen, projectCreating, rollbackExecuting]);
+  const createProject = async () => {
+    if (!newProjectName.trim() || !newProjectPath.trim()) {
+      setProjectError("Enter a workspace name and an existing directory path.");
+      return;
+    }
+    setProjectCreating(true);
+    setProjectError("");
+    try {
+      const { project } = await api<{ project: Project }>("/projects", { method: "POST", body: JSON.stringify({ name: newProjectName.trim(), rootPath: newProjectPath.trim() }) });
+      setProjectDialogOpen(false);
+      setNewProjectName("");
+      setNewProjectPath("");
+      await load(project);
+      setStatus("Workspace added.");
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "Could not create workspace");
+    } finally { setProjectCreating(false); }
+  };
   const send = async () => {
-    if (!active || !message.trim()) return;
+    if (!active || !message.trim() || taskCreating || unavailableProviders.includes(providerId)) return;
+    setTaskCreating(true);
     setStatus("Creating execution task…");
     try {
       let conversationId = activeConversationId;
@@ -122,6 +166,7 @@ function App() {
       setMessages((current) => [...current, response.message]);
       setStatus("Task ready — run it when you are ready.");
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create task"); }
+    finally { setTaskCreating(false); }
   };
   const chooseProvider = (id: string) => { setProviderId(id); setModelId(providers.find((provider) => provider.id === id)?.defaultModel ?? ""); };
   const run = async (task: Task) => {
@@ -242,11 +287,14 @@ function App() {
     }
   }, [active?.id, activePlan?.projectId]);
   const decideApproval = async (approval: Approval, approved: boolean) => {
+    if (approvalBusyId) return;
+    setApprovalBusyId(approval.id);
     try {
       await api<{ ok: boolean }>(`/approvals/${approval.id}/decision`, { method: "POST", body: JSON.stringify({ approved }) });
       setStatus(approved ? "Approval granted." : "Operation rejected.");
       if (active) await load();
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not record approval decision"); }
+    finally { setApprovalBusyId(undefined); }
   };
   const startTerminal = async () => {
     if (!active || !terminalTaskId) { setStatus("Choose a task before starting a terminal session."); return; }
@@ -296,15 +344,19 @@ function App() {
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not preview checkpoint rollback"); }
   };
   const rollbackGitCheckpoint = async () => {
+    setRollbackConfirmOpen(true);
+  };
+  const confirmRollbackGitCheckpoint = async () => {
     if (!active || !rollbackPreview) return;
-    const confirmed = window.confirm(`Reset ${rollbackPreview.branch} to checkpoint ${rollbackPreview.checkpointId}? This rewrites the branch tip. A backup tag will preserve the current HEAD.`);
-    if (!confirmed) return;
+    setRollbackExecuting(true);
     try {
       const { rollback } = await api<{ rollback: { backupRef: string } }>(`/projects/${active.id}/git/checkpoints/${rollbackPreview.checkpointId}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, expectedHead: rollbackPreview.currentHead }) });
+      setRollbackConfirmOpen(false);
       setRollbackPreview(null);
       setStatus(`Rollback complete. Previous HEAD is preserved at ${rollback.backupRef}.`);
       await refreshGitStatus();
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not roll back checkpoint"); }
+    finally { setRollbackExecuting(false); }
   };
   useEffect(() => { void refreshGitStatus().catch((error: Error) => setStatus(error.message)); }, [active?.id]);
   const saveMemory = async () => {
@@ -406,6 +458,9 @@ function App() {
   const failedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "failed").length ?? 0;
   const blockedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "blocked").length ?? 0;
   const cancelledPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "cancelled").length ?? 0;
+  const unavailableSelectedProvider = unavailableProviders.includes(providerId);
+  const activeProvider = providers.find((provider) => provider.id === providerId);
+  const pageTitles: Record<WorkspaceView, string> = { agent: "Agent", plans: "Plans & tasks", files: "Files", terminal: "Terminal", "source-control": "Source control", todos: "TODOs", memory: "Project memory", usage: "Model usage", approvals: "Approvals" };
   const tasksById = new Map(tasks.map((task) => [task.id, task]));
   const dependentsByTaskId = new Map<string, string[]>();
   for (const task of tasks) for (const dependencyId of task.dependencies ?? []) {
@@ -414,98 +469,73 @@ function App() {
     dependentsByTaskId.set(dependencyId, dependents);
   }
   return (
-    <div className="shell">
-      <aside>
-        <div className="brand"><span>PR</span><div>Project PR-0<small>local agent workspace</small></div></div>
-        <button className="project-button" onClick={() => void createProject()}>+ New project</button>
-        <section><p>PROJECTS</p>{projects.map((project) => <button className={active?.id === project.id ? "nav selected" : "nav"} key={project.id} onClick={() => void load(project)}>{project.name}</button>)}</section>
-        <section><p>CONVERSATIONS</p>{conversations.map((conversation, index) => <button className={activeConversationId === conversation.id ? "nav selected" : "nav"} key={conversation.id} onClick={() => void openConversation(conversation.id)}>Conversation {conversations.length - index}</button>)}</section>
-        <section>
-          <p>FILES</p>
-          <div className="file-tools">
-            <button disabled={explorerPath === "."} onClick={() => { const parent = explorerPath.split("/").slice(0, -1).join("/") || "."; void loadWorkspaceDirectory(parent); }}>Up</button>
-            <small>{explorerPath}</small>
-            <input aria-label="Search workspace files" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchWorkspace(); }} placeholder="Search files" />
-            <button disabled={!fileSearch.trim()} onClick={() => void searchWorkspace()}>Search</button>
+    <div className={`shell${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`}>
+      <Sidebar projects={projects} activeProjectId={active?.id} conversations={conversations} activeConversationId={activeConversationId} pendingApprovalCount={approvals.length} view={activeView} collapsed={sidebarCollapsed} mobileOpen={mobileNavOpen} onProjectChange={(projectId) => { const project = projects.find((item) => item.id === projectId); if (project) void load(project); }} onConversationChange={(conversationId) => void openConversation(conversationId)} onNewProject={() => { setProjectError(""); setProjectDialogOpen(true); }} onNewTask={() => { setMessage(""); setActiveConversationId(undefined); setMessages([]); setResult(""); }} onNavigate={setActiveView} onToggleCollapsed={() => setSidebarCollapsed((current) => !current)} onCloseMobile={() => setMobileNavOpen(false)} />
+      <main className="workspace-main">
+        {rollbackConfirmOpen && rollbackPreview && <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="rollback-dialog-title"><div className="dialog-heading"><div><p className="eyebrow">SOURCE CONTROL</p><h2 id="rollback-dialog-title">Confirm rollback</h2></div><button className="icon-button" aria-label="Close rollback confirmation" disabled={rollbackExecuting} onClick={() => setRollbackConfirmOpen(false)} type="button">×</button></div><p>This rewrites the <strong>{rollbackPreview.branch}</strong> branch tip to checkpoint <code>{rollbackPreview.checkpointId}</code>. Current HEAD will be preserved by a backup tag.</p><div className="rollback-confirm-details"><span>Current HEAD <code>{rollbackPreview.currentHead.slice(0, 12)}</code></span><span>Target checkpoint <code>{rollbackPreview.checkpointHead.slice(0, 12)}</code></span><span>{rollbackPreview.commits.length} commits · {rollbackPreview.files.length} changed files</span></div><div className="dialog-actions"><button className="secondary-button" disabled={rollbackExecuting} onClick={() => setRollbackConfirmOpen(false)} type="button">Keep current branch</button><button className="primary-button danger-button" disabled={rollbackExecuting} onClick={() => void confirmRollbackGitCheckpoint()} type="button">{rollbackExecuting ? "Rolling back…" : "Confirm rollback"}</button></div></section></div>}
+        <header className="workspace-topbar">
+          <button className="mobile-menu-button" aria-label="Open navigation" onClick={() => setMobileNavOpen(true)} type="button"><span aria-hidden="true">Menu</span></button>
+          <div className="topbar-title"><small>{active?.name ?? "No workspace selected"}</small><h1>{pageTitles[activeView]}</h1></div>
+          <div className="topbar-status">
+            <span className={providerId === "mock" ? "provider-badge is-mock" : unavailableSelectedProvider ? "provider-badge is-unavailable" : "provider-badge"}>
+              {unavailableSelectedProvider ? `${providerId} unavailable` : providerId === "mock" ? "Mock · test mode · mock" : `${providerId} · ${modelId.trim() || activeProvider?.defaultModel || "model required"}`}
+            </span>
+            <span className="connection-state" role="status" aria-live="polite">{status}</span>
           </div>
-          {searchMatches.length ? searchMatches.map((match) => <button className="nav" key={`${match.path}:${match.line}`} onClick={() => void openWorkspaceFile(match.path)}>{match.path}:{match.line}</button>) : fileEntries.map((entry) => <button className="nav" key={entry.path} disabled={entry.type === "symlink"} onClick={() => entry.type === "directory" ? void loadWorkspaceDirectory(entry.path) : entry.type === "file" ? void openWorkspaceFile(entry.path) : undefined}>{entry.type === "directory" ? "▸ " : entry.type === "file" ? "· " : ""}{entry.name}</button>)}
-        </section>
-        <section><p>APPROVALS</p>{approvals.length ? approvals.map((approval) => <div className="approval-item" key={approval.id}><b>{approval.action}</b><small>{approval.operationKind ?? "operation"} · {approval.risk}</small>{approval.preview && <><small>Target: {approval.preview.path}{approval.preview.overwrite ? " · overwrite" : " · create only"}</small><details className="approval-preview"><summary>Review proposed contents{approval.preview.contentTruncated ? " (preview truncated)" : ""}</summary><pre>{approval.preview.content}</pre></details></>}<div className="approval-actions"><button onClick={() => void decideApproval(approval, true)}>Approve</button><button onClick={() => void decideApproval(approval, false)}>Reject</button></div></div>) : <div className="empty compact">No pending approvals.</div>}</section>
-        <section>
-          <p>GIT</p>
-          <div className="git-actions"><button className="nav" disabled={!active} onClick={() => void refreshGitStatus()}>Refresh status</button><button className="nav" disabled={!active} onClick={() => void createGitCheckpoint()}>Create checkpoint</button></div>
-          {gitError && <small>{gitError}</small>}
-          {gitStatus && <><small>{gitStatus.branch}</small>{gitStatus.changes.map((change) => <div className="task" key={change.path}><small>{change.status}</small><span>{change.path}</span></div>)}</>}{gitDiff?.files.map((file) => <div className="task" key={`${file.path}:${file.staged}`}><small>{file.staged ? "staged" : "working"} · +{file.added ?? "binary"} -{file.deleted ?? "binary"}</small><span>{file.path}</span></div>)}
-          {gitPatch && <details className="git-view"><summary>Patch viewer</summary><div className="git-actions"><button aria-pressed={gitPatchView === "unstaged"} onClick={() => setGitPatchView("unstaged")}>Working tree</button><button aria-pressed={gitPatchView === "staged"} onClick={() => setGitPatchView("staged")}>Staged</button></div><small>{gitPatch[gitPatchView].files.length} files{gitPatch[gitPatchView].truncated ? " · truncated" : ""}</small><pre className="git-patch">{gitPatch[gitPatchView].patch || "No patch available."}</pre></details>}
-          <details className="git-view"><summary>Commit history {gitHistoryTruncated ? "(latest 25)" : `(${gitHistory.length})`}</summary>{gitHistory.map((commit) => <div className="git-commit" key={commit.hash}><b>{commit.shortHash} · {commit.subject}</b><small>{commit.author} · {commit.authoredAt}</small></div>)}</details>
-          {gitCheckpoints.map((checkpoint) => <div className="git-checkpoint" key={checkpoint.id}><b>{checkpoint.shortHash}</b><small>{checkpoint.subject} · {checkpoint.createdAt}</small><button onClick={() => void previewGitRollback(checkpoint)}>Preview rollback</button></div>)}
-          {rollbackPreview && <div className="rollback-preview"><b>Rollback preview</b><small>Branch {rollbackPreview.branch} · {rollbackPreview.commits.length} commits · {rollbackPreview.files.length} changed files{rollbackPreview.truncated ? " · preview truncated" : ""}</small>{rollbackPreview.commits.slice(0, 5).map((commit) => <small key={commit.hash}>{commit.shortHash} · {commit.subject}</small>)}{rollbackPreview.files.slice(0, 10).map((path) => <small key={path}>{path}</small>)}<div className="git-actions"><button onClick={() => setRollbackPreview(null)}>Cancel</button><button disabled={!rollbackPreview.commits.length} onClick={() => void rollbackGitCheckpoint()}>Rollback…</button></div></div>}
-        </section>
-        {usage && <section><p>MODEL USAGE</p><small>{usage.requests} requests · {usage.inputTokens} input / {usage.outputTokens} output tokens</small><small>Estimated cost: ${usage.estimatedCostUsd.toFixed(4)} USD</small>{usage.unknownCostRequests > 0 && <small>{usage.unknownCostRequests} requests with unknown cost</small>}</section>}
-        <section>
-          <p>PROJECT MEMORY</p>
-          <select aria-label="Memory type" value={memoryKind} onChange={(event) => setMemoryKind(event.target.value as MemoryNote["kind"])}><option value="fact">Fact</option><option value="decision">Decision</option><option value="outcome">Outcome</option></select>
-          <textarea aria-label="Project memory content" value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} placeholder="Record a verified project note" />
-          <button className="nav" disabled={!memoryContent.trim()} onClick={() => void saveMemory()}>{editingMemoryId ? "Save note" : "Add note"}</button>
-          {editingMemoryId && <button className="nav" onClick={() => { setEditingMemoryId(undefined); setMemoryContent(""); }}>Cancel edit</button>}
-          {memories.map((memory) => <div className="memory-item" key={memory.id}><small>{memory.kind}</small><p>{memory.content}</p><div className="approval-actions"><button onClick={() => editMemory(memory)}>Edit</button><button onClick={() => void deleteMemory(memory)}>Delete</button></div></div>)}
-        </section>
-        <section>
-          <p>TODO</p>
-          <div className="todo-tools">
-            <input aria-label="TODO title" value={todoTitle} onChange={(event) => setTodoTitle(event.target.value)} placeholder="TODO title" />
-            <input aria-label="TODO description" value={todoDescription} onChange={(event) => setTodoDescription(event.target.value)} placeholder="TODO description" />
-            <input aria-label="TODO priority" type="number" min="0" max="100" value={todoPriority} onChange={(event) => setTodoPriority(Number(event.target.value))} />
-            <textarea aria-label="TODO criteria" value={todoCriteria} onChange={(event) => setTodoCriteria(event.target.value)} placeholder="TODO criteria" />
-            <button disabled={!todoTitle.trim()} onClick={() => void saveTodo()}>{editingTodoId ? "Save TODO" : "Add TODO"}</button>
-            {editingTodoId && <button className="nav" onClick={() => { setEditingTodoId(undefined); setTodoTitle(""); setTodoDescription(""); setTodoPriority(0); setTodoCriteria(""); }}>Cancel edit</button>}
-          </div>
-          {todos.map((todo) => <div className="todo-item" key={todo.id}><div><b>{todo.title}</b><small>{todo.description} · priority {todo.priority} · {todo.status}</small>{todo.acceptanceCriteria.map((criterion) => <small key={criterion}>- {criterion}</small>)}</div><div className="approval-actions"><button onClick={() => editTodo(todo)}>Edit</button><button onClick={() => void updateTodoStatus(todo)}>{todo.status === "open" ? "Complete" : "Reopen"}</button><button onClick={() => void deleteTodo(todo)}>Delete</button></div></div>)}
-        </section>
-        <div className="connection">● {status}</div>
-      </aside>
-      <main>
-        <header><div><p className="eyebrow">ACTIVE PROJECT</p><h1>{active?.name ?? "No project selected"}</h1></div><div className="badge">Supervised mode</div></header>
-        <div className="grid">
-          <section className="chat card">
-            <div className="card-head"><h2>Orchestrator</h2><span>{providerId} / {modelId || "select model"}</span></div>
-            <div className="conversation">
-              {filePreview && <article className="assistant"><b>{filePreview.path}</b><pre>{filePreview.content}</pre></article>}
-              {researchResult && <article className="assistant web-research-result"><b>{researchResult.title}</b><a href={researchResult.url} target="_blank" rel="noreferrer">{researchResult.url}</a><p>{researchResult.text}</p></article>}
-              {browserResult && <article className="assistant browser-result"><b>{browserResult.title || browserResult.url}</b><a href={browserResult.url} target="_blank" rel="noreferrer">{browserResult.url}</a><img src={`data:image/png;base64,${browserResult.screenshotBase64}`} alt={`Isolated browser screenshot of ${browserResult.title || browserResult.url}`} /><p>{browserResult.text}</p>{browserResult.actions.map((action, index) => <small key={`${action.type}:${action.selector}:${index}`}>{action.ok ? "Completed" : "Blocked"} · {action.type} {action.selector} · {action.message}</small>)}{browserResult.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer">{link}</a>)}</article>}
-              {messages.length ? messages.map((item) => <article className="assistant" key={item.id}><b>{item.role === "user" ? "You" : "Agent"}</b><p>{item.content}</p></article>) : result ? <article className="assistant"><b>Execution report</b><p>{result}</p></article> : <div className="empty">Describe a development task to create a persisted, runnable task.</div>}
+        </header>
+
+        {activeView === "agent" && <div className="agent-layout">
+          <section className="chat-panel">
+            <div className="conversation-heading"><div><p className="eyebrow">CONVERSATION</p><h2>{activeConversationId ? `Conversation ${Math.max(1, conversations.findIndex((item) => item.id === activeConversationId) + 1)}` : "Start with a task"}</h2></div><span className={`task-state ${runningTaskId ? "is-running" : ""}`}>{runningTaskId ? "Executing" : visiblePlan && planRunActive ? "Plan running" : approvals.length ? "Awaiting approval" : tasks[0]?.status ?? "Ready"}</span></div>
+            <div className="conversation" aria-live="polite">
+              {researchResult && <article className="result-panel web-research-result"><b>{researchResult.title}</b><a href={researchResult.url} target="_blank" rel="noreferrer">{researchResult.url}</a><p>{researchResult.text}</p></article>}
+              {browserResult && <article className="result-panel browser-result"><b>{browserResult.title || browserResult.url}</b><a href={browserResult.url} target="_blank" rel="noreferrer">{browserResult.url}</a><img src={`data:image/png;base64,${browserResult.screenshotBase64}`} alt={`Isolated browser screenshot of ${browserResult.title || browserResult.url}`} /><p>{browserResult.text}</p>{browserResult.actions.map((action, index) => <small key={`${action.type}:${action.selector}:${index}`}>{action.ok ? "Completed" : "Blocked"} · {action.type} {action.selector} · {action.message}</small>)}{browserResult.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer">{link}</a>)}</article>}
+              {messages.map((item) => <article className={`message message-${item.role}`} key={item.id}><b>{item.role === "user" ? "You" : "PR-0"}</b><MessageText content={item.content} /></article>)}
+              {!messages.length && result && <article className="message message-agent"><b>Execution report</b><MessageText content={result} /></article>}
+              {!messages.length && !result && !researchResult && !browserResult && <div className="welcome-state"><span className="welcome-mark" aria-hidden="true">PR-0</span><h2>What are we building?</h2><p>Describe a change, feature, or bug. Review the plan before execution, and approve any proposed file writes.</p><button className="text-action" onClick={() => setActiveView("plans")} type="button">Browse existing tasks</button></div>}
+              {filePreview && <article className="result-panel file-preview"><div className="panel-heading"><b>{filePreview.path}</b><button aria-label="Close file preview" className="icon-button" onClick={() => setFilePreview(undefined)} type="button">×</button></div><pre>{filePreview.content}</pre></article>}
             </div>
             <div className="composer">
-              <div className="provider-controls">
-                <select aria-label="Task prerequisite" value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}><option value="">No prerequisite</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title} ({task.status})</option>)}</select>
-                <select aria-label="Agent role" value={agentRole} onChange={(event) => setAgentRole(event.target.value)}>{["orchestrator", "architect", "frontend", "backend", "debugger", "reviewer", "qa", "researcher", "documentation"].map((role) => <option key={role} value={role}>{role}</option>)}</select>
-                <select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock (no cost)" : provider.id === "ollama" ? "Ollama (local)" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id}>{id} (configure server credentials)</option>)}</select>
-                {providerId !== "mock" && <input aria-label="Model id" placeholder="Model id (or server default)" value={modelId} onChange={(event) => setModelId(event.target.value)} />}
+              <details className="composer-options"><summary>Task options <span>{agentRole} · {activeProvider?.id === "mock" ? "Mock provider" : providerId}</span></summary>
+                <div className="option-grid">
+                  <label>Provider<select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock · test only" : provider.id === "ollama" ? "Ollama · local" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id} disabled>{id} · credentials missing</option>)}</select></label>
+                  {providerId !== "mock" && <label>Model identifier<input aria-label="Model id" placeholder="Provider default" value={modelId} onChange={(event) => setModelId(event.target.value)} /></label>}
+                  <label>Agent role<select aria-label="Agent role" value={agentRole} onChange={(event) => setAgentRole(event.target.value)}>{["orchestrator", "architect", "frontend", "backend", "debugger", "reviewer", "qa", "researcher", "documentation"].map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
+                  <label>Prerequisite<select aria-label="Task prerequisite" value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}><option value="">None</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title} ({task.status})</option>)}</select></label>
+                </div>
+                {unavailableSelectedProvider && <p className="inline-warning">Configure {providerId} credentials in the server environment before using this provider. No fallback will be selected.</p>}
+              </details>
+              <label className="sr-only" htmlFor="task-prompt">Development task</label>
+              <textarea id="task-prompt" aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!taskCreating && !unavailableSelectedProvider) void send(); } }} placeholder="Describe the change you want to make…" />
+              <div className="composer-footer">
+                <details className="research-options"><summary>Research tools</summary><div className="research-tool-fields"><div className="web-research-controls"><label className="sr-only" htmlFor="research-url">Public HTTPS URL</label><input id="research-url" type="url" placeholder="https://public-site.example/article" value={researchUrl} onChange={(event) => setResearchUrl(event.target.value)} /><button className="secondary-button" disabled={!researchUrl.trim() || researching} onClick={() => void researchPublicPage()} type="button">{researching ? "Researching…" : "Research page"}</button></div><div className="browser-controls"><select aria-label="Browser action" value={browserAction} onChange={(event) => setBrowserAction(event.target.value as typeof browserAction)}><option value="inspect">Inspect page</option><option value="click">Click link or details</option><option value="fill">Fill text field</option></select>{browserAction !== "inspect" && <input aria-label="Browser selector" placeholder="#search" value={browserSelector} onChange={(event) => setBrowserSelector(event.target.value)} />}{browserAction === "fill" && <input aria-label="Browser text value" maxLength={512} placeholder="Text to fill locally" value={browserValue} onChange={(event) => setBrowserValue(event.target.value)} />}<button className="secondary-button" disabled={!researchUrl.trim() || browserRunning || (browserAction !== "inspect" && !browserSelector.trim())} onClick={() => void automateBrowser()} type="button">{browserRunning ? "Inspecting…" : "Inspect in browser"}</button></div></div></details>
+                <span className="composer-hint">{active ? `${active.name} · Shift+Enter for a new line` : "Add a workspace to begin"}</span>
+                <div className="composer-actions"><button className="secondary-button" onClick={() => void generatePlan()} disabled={!active || !message.trim() || planning || planRunActive || taskCreating || unavailableSelectedProvider} type="button">{planning ? "Planning…" : "Plan first"}</button><button className="primary-button" onClick={() => void send()} disabled={!active || !message.trim() || taskCreating || unavailableSelectedProvider} type="button">{taskCreating ? "Creating…" : "Create task"}</button></div>
               </div>
-              <div className="web-research-controls"><input aria-label="Public HTTPS URL" type="url" placeholder="https://public-site.example/article" value={researchUrl} onChange={(event) => setResearchUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void researchPublicPage(); }} /><button disabled={!researchUrl.trim() || researching} onClick={() => void researchPublicPage()}>{researching ? "Researching…" : "Research URL"}</button></div>
-              <div className="browser-controls"><select aria-label="Browser action" value={browserAction} onChange={(event) => setBrowserAction(event.target.value as typeof browserAction)}><option value="inspect">Inspect page</option><option value="click">Click link or details</option><option value="fill">Fill text field</option></select>{browserAction !== "inspect" && <input aria-label="Browser selector" placeholder="#search" value={browserSelector} onChange={(event) => setBrowserSelector(event.target.value)} />}{browserAction === "fill" && <input aria-label="Browser text value" maxLength={512} placeholder="Text to fill locally" value={browserValue} onChange={(event) => setBrowserValue(event.target.value)} />}<button disabled={!researchUrl.trim() || browserRunning || (browserAction !== "inspect" && !browserSelector.trim())} onClick={() => void automateBrowser()}>{browserRunning ? "Inspecting…" : "Run in browser"}</button></div>
-              <div className="compose-row"><textarea aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="What should the team build or change?" /><button onClick={() => void generatePlan()} disabled={!active || !message.trim() || planning || planRunActive}>{planning ? "Planning…" : "Plan"}</button><button onClick={() => void send()} disabled={!active || !message.trim()}>Send ↵</button></div>
             </div>
           </section>
-          <section className="activity card">
-            <div className="card-head"><h2>Agent activity</h2><span className="live">● live</span></div>
-            {visiblePlan && <><div className="plan-progress"><div className="plan-progress-copy"><b>{visiblePlan.summary || planSummary}</b><small>{completedPlanTasks}/{visiblePlan.tasks.length} completed · {runningPlanTasks} running · {waitingPlanTasks} waiting · {failedPlanTasks} failed · {blockedPlanTasks} blocked · {cancelledPlanTasks} cancelled</small></div><progress aria-label="Task plan completion" max={visiblePlan.tasks.length} value={completedPlanTasks} /><button disabled={planRunActive || waitingPlanTasks === 0} onClick={() => void runPlan()}>{planRunActive ? "Running…" : "Run plan"}</button></div><ol className="plan-flow" aria-label="Task dependency flow">{visiblePlan.tasks.map((task, index) => { const prerequisites = (task.dependencies ?? []).map((id) => visiblePlan.tasks.find((candidate) => candidate.id === id)?.title ?? "Unknown task"); return <li className={`plan-flow-item status-${task.status}`} key={task.id}><span className="plan-step">{index + 1}</span><div><b>{task.title}</b><small>{task.role} · {task.status}{prerequisites.length ? ` · after ${prerequisites.join(", ")}` : " · no prerequisites"}</small></div></li>; })}</ol></>}
-            <div className="agent"><div className="avatar">O</div><div><b>Orchestrator</b><small>Routes plans and verifies completion</small></div><span>{runningTaskId ? "running" : "idle"}</span></div>
-            <h3>Execution queue</h3>
-            {tasks.length ? tasks.map((task) => { const prerequisites = (task.dependencies ?? []).map((id) => tasksById.get(id)?.title ?? "Missing task"); const dependents = dependentsByTaskId.get(task.id) ?? []; return <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}{(task.retryAttempts ?? task.execution?.retryAttempts ?? 0) > 0 ? ` · ${task.retryAttempts ?? task.execution?.retryAttempts} retry attempts` : ""}</small>{prerequisites.length > 0 && <small className="task-relations">Depends on: {prerequisites.join(", ")}</small>}{dependents.length > 0 && <small className="task-relations">Unlocks: {dependents.join(", ")}</small>}</div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>; }) : <div className="empty compact">No execution tasks yet.</div>}
-          </section>
-        </div>
-        <section className="bottom card">
-          <div className="card-head"><h2>Terminal & verification</h2><span>Approved local processes</span></div>
-          <div className="terminal-controls">
-            <select aria-label="Task for terminal session" value={terminalTaskId} onChange={(event) => setTerminalTaskId(event.target.value)}><option value="">Select task</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}</select>
-            <select aria-label="Terminal executable" value={terminalExecutable} onChange={(event) => setTerminalExecutable(event.target.value)}>{["node", "npm", "npx", "git"].map((executable) => <option key={executable} value={executable}>{executable}</option>)}</select>
-            <textarea aria-label="Terminal arguments" value={terminalArguments} onChange={(event) => setTerminalArguments(event.target.value)} placeholder="One argument per line" />
-            <button disabled={!active || !terminalTaskId} onClick={() => void startTerminal()}>Request command</button>
-          </div>
-          {terminalSessions.map((session) => <div className="terminal-session" key={session.id}><div><b>{session.executable} {session.args.join(" ")}</b><span>{session.status}{session.exitCode === null ? "" : ` · exit ${session.exitCode}`}</span>{session.status === "running" && <button onClick={() => void stopTerminal(session)}>Stop</button>}</div><pre>{session.output || "Waiting for output…"}</pre></div>)}
-        </section>
+          <TaskQueuePanel tasks={tasks} visiblePlan={visiblePlan} planRunActive={planRunActive} completedPlanTasks={completedPlanTasks} runningPlanTasks={runningPlanTasks} waitingPlanTasks={waitingPlanTasks} failedPlanTasks={failedPlanTasks} blockedPlanTasks={blockedPlanTasks} cancelledPlanTasks={cancelledPlanTasks} tasksById={tasksById} dependentsByTaskId={dependentsByTaskId} runningTaskId={runningTaskId} onRun={(taskId) => { const task = tasksById.get(taskId); if (task) void run(task); }} onCancel={(taskId) => { const task = tasksById.get(taskId); if (task) void cancel(task); }} onRunPlan={() => void runPlan()} />
+        </div>}
+
+        {activeView === "plans" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">EXECUTION</p><h2>Plans & tasks</h2><p>Review dependencies and run ready tasks. Progress reflects persisted task states.</p></div><TaskQueuePanel tasks={tasks} visiblePlan={visiblePlan} planRunActive={planRunActive} completedPlanTasks={completedPlanTasks} runningPlanTasks={runningPlanTasks} waitingPlanTasks={waitingPlanTasks} failedPlanTasks={failedPlanTasks} blockedPlanTasks={blockedPlanTasks} cancelledPlanTasks={cancelledPlanTasks} tasksById={tasksById} dependentsByTaskId={dependentsByTaskId} runningTaskId={runningTaskId} onRun={(taskId) => { const task = tasksById.get(taskId); if (task) void run(task); }} onCancel={(taskId) => { const task = tasksById.get(taskId); if (task) void cancel(task); }} onRunPlan={() => void runPlan()} /></section>}
+
+        {activeView === "files" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">WORKSPACE</p><h2>Files</h2><p>Browse and search text in the active registered workspace.</p></div><div className="file-workspace"><section className="tool-section"><div className="file-toolbar"><button className="secondary-button" disabled={explorerPath === "." || !active} onClick={() => { const parent = explorerPath.split("/").slice(0, -1).join("/") || "."; void loadWorkspaceDirectory(parent); }} type="button">Up one level</button><span className="path-label">{explorerPath}</span><label className="sr-only" htmlFor="file-search">Search workspace files</label><input id="file-search" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchWorkspace(); }} placeholder="Search workspace files" /><button className="secondary-button" disabled={!active || !fileSearch.trim()} onClick={() => void searchWorkspace()} type="button">Search</button></div><div className="file-list" aria-label="Workspace files">
+              {searchMatches.length ? searchMatches.map((match) => <button className="file-entry" key={`${match.path}:${match.line}`} onClick={() => void openWorkspaceFile(match.path)} type="button"><span aria-hidden="true">F</span><span>{match.path}:{match.line}</span><small>{match.text}</small></button>) : fileEntries.map((entry) => <button aria-disabled={entry.type === "symlink" || entry.type === "other"} className="file-entry" key={entry.path} disabled={entry.type === "symlink" || entry.type === "other"} onClick={() => entry.type === "directory" ? void loadWorkspaceDirectory(entry.path) : entry.type === "file" ? void openWorkspaceFile(entry.path) : undefined} type="button"><span aria-hidden="true">{entry.type === "directory" ? "D" : "F"}</span><span title={entry.path}>{entry.name}</span></button>)}</div>{!fileEntries.length && !searchMatches.length && <div className="empty-state">No entries in this directory.</div>}</section><section className="tool-section file-content"><h3>Preview</h3>{filePreview ? <><div className="path-label">{filePreview.path}</div><pre>{filePreview.content}</pre></> : <div className="empty-state">Select a text file to preview it. Files flagged as sensitive are excluded by the API.</div>}</section></div></section>}
+
+        {activeView === "approvals" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">HUMAN REVIEW</p><h2>Approvals <span className="count-badge">{approvals.length}</span></h2><p>Pending operations have not run yet. Review the target and proposed content before deciding.</p></div><ApprovalInbox approvals={approvals} busyId={approvalBusyId} onDecision={decideApproval} /></section>}
+
+        {activeView === "terminal" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">SUPERVISED EXECUTION</p><h2>Terminal</h2><p>Commands use an allowlist and require approval in supervised mode. Review each command before it runs.</p></div><section className="tool-section"><div className="terminal-controls"><label>Task<select aria-label="Task for terminal session" value={terminalTaskId} onChange={(event) => setTerminalTaskId(event.target.value)}><option value="">Select task</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}</select></label><label>Executable<select aria-label="Terminal executable" value={terminalExecutable} onChange={(event) => setTerminalExecutable(event.target.value)}>{["node", "npm", "npx", "git"].map((executable) => <option key={executable} value={executable}>{executable}</option>)}</select></label><label className="terminal-args">Arguments<textarea aria-label="Terminal arguments" value={terminalArguments} onChange={(event) => setTerminalArguments(event.target.value)} placeholder="One argument per line" /></label><button className="primary-button" disabled={!active || !terminalTaskId} onClick={() => void startTerminal()} type="button">Request approval to run</button></div></section>{terminalSessions.length ? terminalSessions.map((session) => <article className="terminal-session" key={session.id}><div className="session-heading"><div><b>{session.executable} {session.args.join(" ")}</b><span className={`session-state status-${session.status}`}>{session.status}{session.exitCode === null ? "" : ` · exit ${session.exitCode}`}</span></div>{session.status === "running" && <button className="secondary-button" onClick={() => void stopTerminal(session)} type="button">Stop session</button>}<button className="secondary-button" onClick={() => void navigator.clipboard.writeText(session.output)} type="button">Copy output</button></div><pre>{session.output || "Waiting for process output…"}</pre></article>) : <div className="empty-state">No terminal sessions for this workspace.</div>}</section>}
+
+        {activeView === "source-control" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">GIT</p><h2>Source control</h2><p>Inspect working changes, patches, history, and recovery checkpoints. PR-0 does not discard uncommitted changes.</p></div><section className="tool-section"><div className="section-toolbar"><button className="secondary-button" disabled={!active} onClick={() => void refreshGitStatus()} type="button">Refresh status</button><button className="secondary-button" disabled={!active} onClick={() => void createGitCheckpoint()} type="button">Create clean checkpoint</button>{gitStatus && <span className="branch-label">Branch · {gitStatus.branch}</span>}</div>{gitError && <p className="inline-error" role="alert">{gitError}</p>}{gitStatus?.changes.length ? <div className="change-list">{gitStatus.changes.map((change) => <div className="change-row" key={change.path}><code>{change.status || "?"}</code><span>{change.path}</span></div>)}</div> : <p className="empty-state">No working-tree changes reported.</p>}{gitDiff?.files.length ? <div className="change-list">{gitDiff.files.map((file) => <div className="change-row" key={`${file.path}:${file.staged}`}><span className="change-kind">{file.staged ? "Staged" : "Working tree"}</span><span>{file.path}</span><span>+{file.added ?? "binary"} / -{file.deleted ?? "binary"}</span></div>)}</div> : null}</section><details className="git-view" open><summary>Patch review</summary>{gitPatch ? <><div className="git-actions"><button aria-pressed={gitPatchView === "unstaged"} onClick={() => setGitPatchView("unstaged")} type="button">Working tree</button><button aria-pressed={gitPatchView === "staged"} onClick={() => setGitPatchView("staged")} type="button">Staged</button></div><small>{gitPatch[gitPatchView].files.length} files{gitPatch[gitPatchView].truncated ? " · patch truncated" : ""}</small><pre className="git-patch">{gitPatch[gitPatchView].patch || "No patch available."}</pre></> : <p className="empty-state">Refresh Git status to load patch data.</p>}</details><details className="git-view"><summary>Commit history {gitHistoryTruncated ? "· latest 25" : `· ${gitHistory.length}`}</summary>{gitHistory.map((commit) => <div className="git-commit" key={commit.hash}><b>{commit.shortHash} · {commit.subject}</b><small>{commit.author} · {commit.authoredAt}</small></div>)}</details><section className="tool-section"><h3>Recovery checkpoints</h3>{gitCheckpoints.length ? gitCheckpoints.map((checkpoint) => <div className="git-checkpoint" key={checkpoint.id}><b>{checkpoint.shortHash}</b><small>{checkpoint.subject} · {checkpoint.createdAt}</small><button className="secondary-button" onClick={() => void previewGitRollback(checkpoint)} type="button">Preview rollback</button></div>) : <p className="empty-state">No checkpoints are available.</p>}{rollbackPreview && <div className="rollback-preview"><b>Rollback preview · {rollbackPreview.branch}</b><small>{rollbackPreview.commits.length} commits · {rollbackPreview.files.length} changed files{rollbackPreview.truncated ? " · preview truncated" : ""}</small>{rollbackPreview.commits.slice(0, 5).map((commit) => <small key={commit.hash}>{commit.shortHash} · {commit.subject}</small>)}{rollbackPreview.files.slice(0, 10).map((path) => <small key={path}>{path}</small>)}<div className="git-actions"><button onClick={() => setRollbackPreview(null)} type="button">Cancel</button><button disabled={!rollbackPreview.commits.length} onClick={() => void rollbackGitCheckpoint()} type="button">Review rollback…</button></div></div>}</section></section>}
+
+        {activeView === "todos" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">PROJECT</p><h2>TODOs</h2><p>Manual project TODOs are separate from agent task execution.</p></div><section className="tool-section"><div className="todo-tools"><label>Title<input aria-label="TODO title" value={todoTitle} onChange={(event) => setTodoTitle(event.target.value)} placeholder="TODO title" /></label><label>Description<input aria-label="TODO description" value={todoDescription} onChange={(event) => setTodoDescription(event.target.value)} placeholder="What needs doing?" /></label><label>Priority<input aria-label="TODO priority" type="number" min="0" max="100" value={todoPriority} onChange={(event) => setTodoPriority(Number(event.target.value))} /></label><label>Acceptance criteria<textarea aria-label="TODO criteria" value={todoCriteria} onChange={(event) => setTodoCriteria(event.target.value)} placeholder="One criterion per line" /></label><div className="form-actions"><button className="primary-button" disabled={!todoTitle.trim()} onClick={() => void saveTodo()} type="button">{editingTodoId ? "Save TODO" : "Add TODO"}</button>{editingTodoId && <button className="secondary-button" onClick={() => { setEditingTodoId(undefined); setTodoTitle(""); setTodoDescription(""); setTodoPriority(0); setTodoCriteria(""); }} type="button">Cancel edit</button>}</div></div></section><div className="todo-list">{todos.length ? todos.map((todo) => <article className="todo-item" key={todo.id}><div><b>{todo.title}</b><small>{todo.description || "No description"} · Priority {todo.priority} · {todo.status}</small>{todo.acceptanceCriteria.map((criterion) => <small key={criterion}>- {criterion}</small>)}</div><div className="approval-actions"><button onClick={() => editTodo(todo)} type="button">Edit</button><button onClick={() => void updateTodoStatus(todo)} type="button">{todo.status === "open" ? "Complete" : "Reopen"}</button><button onClick={() => void deleteTodo(todo)} type="button">Delete</button></div></article>) : <div className="empty-state">No TODOs yet. Add a task to track a project-level follow-up.</div>}</div></section>}
+
+        {activeView === "memory" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">PROJECT CONTEXT</p><h2>Project memory</h2><p>Store verified facts, decisions, or outcomes. Credential-like values are rejected by the server.</p></div><section className="tool-section"><div className="memory-form"><label>Note type<select aria-label="Memory type" value={memoryKind} onChange={(event) => setMemoryKind(event.target.value as MemoryNote["kind"])}><option value="fact">Fact</option><option value="decision">Decision</option><option value="outcome">Outcome</option></select></label><label>Verified project note<textarea aria-label="Project memory content" value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} placeholder="Record a verified project note" /></label><div className="form-actions"><button className="primary-button" disabled={!memoryContent.trim()} onClick={() => void saveMemory()} type="button">{editingMemoryId ? "Save note" : "Add note"}</button>{editingMemoryId && <button className="secondary-button" onClick={() => { setEditingMemoryId(undefined); setMemoryContent(""); }} type="button">Cancel edit</button>}</div></div></section><div className="memory-list">{memories.length ? memories.map((memory) => <article className="memory-item" key={memory.id}><div><small>{memory.kind} · updated {new Date(memory.updatedAt).toLocaleString()}</small><p>{memory.content}</p></div><div className="approval-actions"><button onClick={() => editMemory(memory)} type="button">Edit</button><button onClick={() => void deleteMemory(memory)} type="button">Delete</button></div></article>) : <div className="empty-state">No project memory yet.</div>}</div></section>}
+
+        {activeView === "usage" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">PROJECT</p><h2>Model usage</h2><p>Provider-reported usage and cost estimates; these are not billing records.</p></div>{usage ? <div className="usage-grid"><article><small>Requests</small><strong>{usage.requests}</strong></article><article><small>Input tokens</small><strong>{usage.inputTokens.toLocaleString()}</strong></article><article><small>Output tokens</small><strong>{usage.outputTokens.toLocaleString()}</strong></article><article><small>Estimated cost</small><strong>${usage.estimatedCostUsd.toFixed(4)}</strong></article><p>{usage.unknownCostRequests} requests have unknown cost.</p></div> : <div className="empty-state">Usage data is not available for this workspace.</div>}</section>}
       </main>
+
+      {projectDialogOpen && <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !projectCreating) setProjectDialogOpen(false); }}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title"><div className="dialog-heading"><div><p className="eyebrow">WORKSPACE</p><h2 id="project-dialog-title">Add workspace</h2></div><button className="icon-button" aria-label="Close dialog" disabled={projectCreating} onClick={() => setProjectDialogOpen(false)} type="button">×</button></div><p>Register an existing directory. PR-0 will not create or move files for you.</p><label>Workspace name<input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} /></label><label>Existing directory path<input value={newProjectPath} onChange={(event) => setNewProjectPath(event.target.value)} placeholder="/home/you/projects/example" /></label>{projectError && <p className="inline-error" role="alert">{projectError}</p>}<div className="dialog-actions"><button className="secondary-button" disabled={projectCreating} onClick={() => setProjectDialogOpen(false)} type="button">Cancel</button><button className="primary-button" disabled={projectCreating || !newProjectName.trim() || !newProjectPath.trim()} onClick={() => void createProject()} type="button">{projectCreating ? "Adding…" : "Add workspace"}</button></div></section></div>}
     </div>
   );
 }
