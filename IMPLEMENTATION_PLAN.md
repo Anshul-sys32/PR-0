@@ -42,20 +42,22 @@
 ## Verification recorded in this resume
 
 - `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web workspaces.
-- `npm test`: passed, 5 test files and 40 tests after live plan progress and dependency-visualization changes.
-- `npx vitest run tests/integration/api.test.ts`: passed, 14 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, and SSE progress.
+- `npm test`: passed, 7 test files and 66 tests after Playwright browser automation and public web research.
+- `npx vitest run tests/integration/api.test.ts`: passed, 16 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, SSE progress, and browser/research URL rejection.
+- `npx vitest run tests/unit/web-research.test.ts`: passed URL, IP-range, DNS-mixing, and address-pinning policy cases without outbound network calls.
+- `npx vitest run tests/unit/browser-automation.test.ts`: passed 2 Chromium-backed tests using a mocked fetcher to verify navigation, local text-field interaction, screenshot capture, and blocked subresources.
 - `npm run build`: passed across all packages; Vite reports a non-blocking recommendation to switch React plugins for Rolldown performance.
 - `git diff --check`: passed.
 - The Git status and numstat integration test passed against a disposable repository initialized during the test.
 - The strict web side-effect import check (`npx tsc --noEmit -p apps/web/tsconfig.json --noUncheckedSideEffectImports`) passed.
-- Browser smoke check confirmed the UI connects to the API; no project was created in the development database.
+- Browser smoke check confirmed the UI connects to the API, rejects loopback URLs, and inspects `https://example.org/` through the pinned fetcher; no project was created in the development database.
 - `get_errors` reported no diagnostics in the touched TypeScript, prompt, and test files after the latest full verification.
 - Focused agent-loop and API integration checks passed (19 tests), covering persisted retry counts across SQLite reopen and duplicate active task/plan run conflicts.
-- Real cloud provider connectivity, browser automation, public web research, and sandbox-restricted bind/process behavior remain unverified.
+- Real cloud provider connectivity and arbitrary-site compatibility remain unverified; the live public-page smoke check covered Example Domain only. Sandbox-restricted bind/process behavior also remains unverified.
 
 - [x] Finish Phase 5 UI: add a Run plan control and poll/display plan-level execution progress; persist transient provider retry attempts and expose their count; verify duplicate active task/plan runs return conflicts.
 - [x] Complete Phase 6 real-time plan updates with SSE and improve task-plan visualization with an ordered dependency flow and named prerequisites.
-- [ ] Implement browser automation and public web research with strict network controls.
+- [x] Implement browser automation and public web research with strict network controls: user-submitted HTTPS pages use public-IP DNS pinning, redirect rejection, bounded text retrieval, and an isolated Playwright context with JavaScript/subresources disabled, GET-only validated navigation, and restricted selector actions.
 - [ ] Complete Git integration with patch viewer/history/checkpoints/rollback and add task dependency visualization.
 - [ ] Harden project memory retrieval, improve secret detection, and cover memory UI workflows with browser tests.
 - [ ] Complete hardening, security coverage, browser tests, and release documentation.
@@ -72,6 +74,6 @@
 - Real provider connectivity cannot be verified without user credentials.
 - OpenAI API requests remain unverified unless the operator configures a valid key and model; no request is issued automatically.
 - Anthropic and Gemini real API calls and Ollama local service calls remain unverified until configured by the operator.
-- Browser automation and web research are planned subsequent increments; they are not presented as completed by this initial vertical slice.
+- Browser and research access remain user-initiated and constrained to validated public HTTPS navigation; page scripts, subresources, forms, downloads, popups, and model-invoked web access are disabled.
 - A compiled-server bind smoke test is blocked by the execution sandbox (`EPERM` when binding loopback), not by an application startup error. SQLite itself was smoke-tested successfully in Node 22.
 - The execution sandbox also rejects child-process spawning with `EPERM`. Terminal session persistence and approval workflows are integration-tested, but successful subprocess output must be verified on a normal local host.

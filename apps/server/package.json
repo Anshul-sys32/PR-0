@@ -16,6 +16,7 @@
     "@pr-0/tool-runtime": "file:../../packages/tool-runtime",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
+    "playwright": "^1.64.1",
     "vitest": "5.0.5",
     "zod": "^4.6.7"
   },

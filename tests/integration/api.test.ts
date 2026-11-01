@@ -80,6 +80,22 @@ let app: FastifyInstance; let directory: string;
 beforeAll(async () => { directory = mkdtempSync(join(tmpdir(), "pr0-test-")); app = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "test.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 3, MAX_TOOL_STEPS_PER_TASK: 40 }, undefined, [new AbortableTestAdapter()]); });
 afterAll(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
 describe("local workflow", () => {
+  it("rejects non-HTTPS and local destinations for public web research", async () => {
+    for (const url of ["http://example.org/page", "https://127.0.0.1/", "https://localhost/"]) {
+      const response = await app.inject({ method: "POST", url: "/api/web/research", payload: { url } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toBeTruthy();
+    }
+  });
+
+  it("rejects local browser automation targets before launching Chromium", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/browser/automate", payload: { url: "https://127.0.0.1/", actions: [] } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain("public DNS hostname");
+    const unsafeSelector = await app.inject({ method: "POST", url: "/api/browser/automate", payload: { url: "https://example.org/", actions: [{ type: "click", selector: "a[href^='javascript']" }] } });
+    expect(unsafeSelector.statusCode).toBe(400);
+  });
+
   it("persists and runs a mock task", async () => {
     expect((await app.inject("/health")).json().ok).toBe(true);
     const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { name: "test", rootPath: directory } })).json().project;

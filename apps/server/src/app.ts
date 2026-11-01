@@ -7,9 +7,11 @@ import { lstat, open, readFile, readdir, realpath, stat } from "node:fs/promises
 import { join, relative, resolve } from "node:path";
 import { AgentExecutor, loadAgentPrompt } from "@pr-0/agent-core";
 import { AnthropicMessagesAdapter, GeminiAdapter, OllamaAdapter, OpenAIResponsesAdapter, ProviderRegistry, type ModelAdapter, type ModelMessage } from "@pr-0/model-gateway";
-import { canTransition, createConversationSchema, createMessageSchema, createPlanRequestSchema, createProjectSchema, createTaskSchema, projectMemoryInputSchema, taskPlanSchema, todoInputSchema, approveSchema, filesystemListInputSchema, filesystemReadInputSchema, filesystemSearchInputSchema, runTaskSchema, terminalStartSchema, writeFileSchema, type TaskPlan, type TerminalStartRequest, type WriteFileRequest } from "@pr-0/shared";
+import { browserAutomationRequestSchema, canTransition, createConversationSchema, createMessageSchema, createPlanRequestSchema, createProjectSchema, createTaskSchema, projectMemoryInputSchema, taskPlanSchema, todoInputSchema, approveSchema, filesystemListInputSchema, filesystemReadInputSchema, filesystemSearchInputSchema, webResearchRequestSchema, runTaskSchema, terminalStartSchema, writeFileSchema, type TaskPlan, type TerminalStartRequest, type WriteFileRequest } from "@pr-0/shared";
 import { isSensitiveFilePath, isWithin, requiresApproval, safeWorkspacePath, verifyResolvedPath, verifyWritePath } from "@pr-0/tool-runtime";
 import { DatabaseService } from "./db.js";
+import { automatePublicPage } from "./browser-automation.js";
+import { researchPublicPage } from "./web-research.js";
 import type { Config } from "./config.js";
 
 export async function createApp(config: Config, database = new DatabaseService(config.DATABASE_URL), additionalAdapters: ModelAdapter[] = []) {
@@ -210,6 +212,14 @@ export async function createApp(config: Config, database = new DatabaseService(c
     }
   };
   app.get("/health", async () => ({ ok: true, providers: registry.list() }));
+  app.post("/api/web/research", async (request) => {
+    const input = webResearchRequestSchema.parse(request.body);
+    return { page: await researchPublicPage(input.url) };
+  });
+  app.post("/api/browser/automate", async (request) => {
+    const input = browserAutomationRequestSchema.parse(request.body);
+    return { result: await automatePublicPage(input) };
+  });
   app.get("/api/projects", async () => ({ projects: database.listProjects() }));
   app.post("/api/projects", async (request, reply) => { const input = createProjectSchema.parse(request.body); const lexicalRoot = resolve(input.rootPath); let allowedRoot: string | undefined; if (config.PR0_WORKSPACE_ROOT) { allowedRoot = await realpath(resolve(config.PR0_WORKSPACE_ROOT)); if (!isWithin(allowedRoot, lexicalRoot)) return reply.code(403).send({ error: "Project must be inside the configured workspace root" }); } let rootPath: string; try { rootPath = await realpath(lexicalRoot); } catch { return reply.code(400).send({ error: "Project workspace directory must exist" }); } if (!(await stat(rootPath)).isDirectory()) return reply.code(400).send({ error: "Project workspace must be a directory" }); if (allowedRoot && !isWithin(allowedRoot, rootPath)) return reply.code(403).send({ error: "Project must be inside the configured workspace root" }); const project = database.createProject(input.name, rootPath); database.audit("project.created", project.id); return reply.code(201).send({ project }); });
   app.get("/api/projects/:projectId/tasks", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { tasks: database.listTasks(projectId).map((task) => ({ ...task, retryAttempts: database.getTaskRetryAttempts(task.id), execution: database.getTaskExecution(task.id) ?? null })) }; });

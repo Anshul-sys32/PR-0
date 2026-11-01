@@ -6,6 +6,8 @@ import "./workspace.css";
 type Project = { id: string; name: string; rootPath: string };
 type Task = { id: string; title: string; status: string; role: string; description: string; dependencies?: string[]; retryAttempts?: number; execution?: { provider: string; model: string; retryAttempts: number; result: { summary: string; status: string } } | null };
 type TaskPlan = { id: string; projectId: string; summary: string; tasks: Task[] };
+type PublicResearchResult = { url: string; title: string; text: string };
+type BrowserAutomationResult = { url: string; title: string; text: string; links: string[]; screenshotBase64: string; actions: Array<{ type: string; selector: string; ok: boolean; message: string }> };
 type Provider = { id: string; configured: boolean; defaultModel: string | null };
 type Conversation = { id: string; projectId: string; createdAt: string };
 type ChatMessage = { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string };
@@ -55,6 +57,14 @@ function App() {
   const [planning, setPlanning] = useState(false);
   const [activePlan, setActivePlan] = useState<TaskPlan | null>(null);
   const [planRunActive, setPlanRunActive] = useState(false);
+  const [researchUrl, setResearchUrl] = useState("");
+  const [researching, setResearching] = useState(false);
+  const [researchResult, setResearchResult] = useState<PublicResearchResult | null>(null);
+  const [browserAction, setBrowserAction] = useState<"inspect" | "click" | "fill">("inspect");
+  const [browserSelector, setBrowserSelector] = useState("");
+  const [browserValue, setBrowserValue] = useState("");
+  const [browserRunning, setBrowserRunning] = useState(false);
+  const [browserResult, setBrowserResult] = useState<BrowserAutomationResult | null>(null);
   const load = async (preferredProject?: Project) => { const data = await api<{ projects: Project[] }>("/projects"); setProjects(data.projects); const project = preferredProject ?? active ?? data.projects[0]; setActive(project); if (!project) {
     setTasks([]); setResult(""); setConversations([]); setActiveConversationId(undefined); setMessages([]); setApprovals([]); setTerminalSessions([]); setMemories([]); setUsage(undefined); setTodos([]);
     return;
@@ -156,6 +166,40 @@ function App() {
       const data = await api<{ search: { results: SearchMatch[] } }>("/files/search", { method: "POST", body: JSON.stringify({ projectId: active.id, query: fileSearch, path: explorerPath, maxResults: 50 }) });
       setSearchMatches(data.search.results);
     } catch (error) { setStatus(error instanceof Error ? error.message : "Search failed"); }
+  };
+  const researchPublicPage = async () => {
+    if (!researchUrl.trim()) return;
+    setResearching(true);
+    try {
+      const { page } = await api<{ page: { url: string; contentType: string; body: string } }>("/web/research", { method: "POST", body: JSON.stringify({ url: researchUrl.trim() }) });
+      let title = page.url;
+      let text = page.body;
+      if (page.contentType === "text/html") {
+        const document = new DOMParser().parseFromString(page.body, "text/html");
+        document.querySelectorAll("script,style,noscript,svg,iframe,object,embed,form,nav,footer").forEach((element) => element.remove());
+        title = document.title.trim() || page.url;
+        text = document.body.textContent?.replace(/\s+/g, " ").trim() ?? "";
+      }
+      setResearchResult({ url: page.url, title, text: text.slice(0, 30_000) || "No readable text was found on the page." });
+      setResearchUrl(page.url);
+      setStatus("Public page retrieved. Treat its contents as untrusted.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not research this public URL");
+    } finally { setResearching(false); }
+  };
+  const automateBrowser = async () => {
+    if (!researchUrl.trim()) return;
+    setBrowserRunning(true);
+    try {
+      const actions = browserAction === "inspect" ? [] : browserAction === "click"
+        ? [{ type: "click" as const, selector: browserSelector.trim() }]
+        : [{ type: "fill" as const, selector: browserSelector.trim(), value: browserValue }];
+      const { result } = await api<{ result: BrowserAutomationResult }>("/browser/automate", { method: "POST", body: JSON.stringify({ url: researchUrl.trim(), actions }) });
+      setBrowserResult(result);
+      setStatus("Isolated browser inspection completed.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Browser automation failed");
+    } finally { setBrowserRunning(false); }
   };
   const openWorkspaceFile = async (path: string) => {
     if (!active) return;
@@ -361,6 +405,8 @@ function App() {
             <div className="card-head"><h2>Orchestrator</h2><span>{providerId} / {modelId || "select model"}</span></div>
             <div className="conversation">
               {filePreview && <article className="assistant"><b>{filePreview.path}</b><pre>{filePreview.content}</pre></article>}
+              {researchResult && <article className="assistant web-research-result"><b>{researchResult.title}</b><a href={researchResult.url} target="_blank" rel="noreferrer">{researchResult.url}</a><p>{researchResult.text}</p></article>}
+              {browserResult && <article className="assistant browser-result"><b>{browserResult.title || browserResult.url}</b><a href={browserResult.url} target="_blank" rel="noreferrer">{browserResult.url}</a><img src={`data:image/png;base64,${browserResult.screenshotBase64}`} alt={`Isolated browser screenshot of ${browserResult.title || browserResult.url}`} /><p>{browserResult.text}</p>{browserResult.actions.map((action, index) => <small key={`${action.type}:${action.selector}:${index}`}>{action.ok ? "Completed" : "Blocked"} · {action.type} {action.selector} · {action.message}</small>)}{browserResult.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer">{link}</a>)}</article>}
               {messages.length ? messages.map((item) => <article className="assistant" key={item.id}><b>{item.role === "user" ? "You" : "Agent"}</b><p>{item.content}</p></article>) : result ? <article className="assistant"><b>Execution report</b><p>{result}</p></article> : <div className="empty">Describe a development task to create a persisted, runnable task.</div>}
             </div>
             <div className="composer">
@@ -370,6 +416,8 @@ function App() {
                 <select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock (no cost)" : provider.id === "ollama" ? "Ollama (local)" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id}>{id} (configure server credentials)</option>)}</select>
                 {providerId !== "mock" && <input aria-label="Model id" placeholder="Model id (or server default)" value={modelId} onChange={(event) => setModelId(event.target.value)} />}
               </div>
+              <div className="web-research-controls"><input aria-label="Public HTTPS URL" type="url" placeholder="https://public-site.example/article" value={researchUrl} onChange={(event) => setResearchUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void researchPublicPage(); }} /><button disabled={!researchUrl.trim() || researching} onClick={() => void researchPublicPage()}>{researching ? "Researching…" : "Research URL"}</button></div>
+              <div className="browser-controls"><select aria-label="Browser action" value={browserAction} onChange={(event) => setBrowserAction(event.target.value as typeof browserAction)}><option value="inspect">Inspect page</option><option value="click">Click link or details</option><option value="fill">Fill text field</option></select>{browserAction !== "inspect" && <input aria-label="Browser selector" placeholder="#search" value={browserSelector} onChange={(event) => setBrowserSelector(event.target.value)} />}{browserAction === "fill" && <input aria-label="Browser text value" maxLength={512} placeholder="Text to fill locally" value={browserValue} onChange={(event) => setBrowserValue(event.target.value)} />}<button disabled={!researchUrl.trim() || browserRunning || (browserAction !== "inspect" && !browserSelector.trim())} onClick={() => void automateBrowser()}>{browserRunning ? "Inspecting…" : "Run in browser"}</button></div>
               <div className="compose-row"><textarea aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="What should the team build or change?" /><button onClick={() => void generatePlan()} disabled={!active || !message.trim() || planning || planRunActive}>{planning ? "Planning…" : "Plan"}</button><button onClick={() => void send()} disabled={!active || !message.trim()}>Send ↵</button></div>
             </div>
           </section>

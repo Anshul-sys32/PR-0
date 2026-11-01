@@ -83,6 +83,16 @@ export const runTaskSchema = z.object({ providerId: z.enum(["mock", "openai", "a
 export const filesystemReadInputSchema = z.object({ path: z.string().trim().min(1).max(1024) });
 export const filesystemListInputSchema = z.object({ path: z.string().trim().min(1).max(1024).default("."), maxEntries: z.number().int().min(1).max(500).default(200) });
 export const filesystemSearchInputSchema = z.object({ query: z.string().trim().min(1).max(500), path: z.string().trim().min(1).max(1024).default("."), maxResults: z.number().int().min(1).max(100).default(50) });
+export const webResearchRequestSchema = z.object({ url: z.string().trim().min(1).max(2048) });
+const browserSelectorSchema = z.string().trim().min(1).max(120).regex(/^(?:[a-z][a-z0-9-]*|#[a-z_][a-z0-9_-]*|\.[a-z_][a-z0-9_-]*|\[[a-z][a-z0-9_-]*(?:=(?:"[a-z0-9 _-]{1,80}"|'[a-z0-9 _-]{1,80}'|[a-z0-9_-]+))?\]|[a-z][a-z0-9-]*(?:#[a-z_][a-z0-9_-]*|\.[a-z_][a-z0-9_-]*|\[[a-z][a-z0-9_-]*(?:=(?:"[a-z0-9 _-]{1,80}"|'[a-z0-9 _-]{1,80}'|[a-z0-9_-]+))?\]))$/i);
+export const browserAutomationRequestSchema = z.object({
+  url: z.string().trim().min(1).max(2048),
+  actions: z.array(z.discriminatedUnion("type", [
+    z.object({ type: z.literal("click"), selector: browserSelectorSchema }),
+    z.object({ type: z.literal("fill"), selector: browserSelectorSchema, value: z.string().max(512) })
+  ])).max(8).default([])
+});
+export type BrowserAutomationRequest = z.infer<typeof browserAutomationRequestSchema>;
 export const transitionMap: Record<TaskState, TaskState[]> = {
   pending: ["ready", "blocked", "cancelled"], ready: ["running", "blocked", "cancelled"], running: ["waiting_for_tool", "waiting_for_approval", "completed", "failed", "blocked", "cancelled"],
   waiting_for_tool: ["running", "failed", "cancelled"], waiting_for_approval: ["running", "cancelled", "failed"], blocked: [], failed: [], completed: [], cancelled: []
