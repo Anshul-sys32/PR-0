@@ -34,6 +34,7 @@ type TaskQueuePanelProps = {
   tasksById: Map<string, Task>;
   dependentsByTaskId: Map<string, string[]>;
   runningTaskId?: string;
+  providerReady: boolean;
   onRun: (taskId: string) => void;
   onCancel: (taskId: string) => void;
   onRunPlan: () => void;
@@ -42,7 +43,7 @@ type TaskQueuePanelProps = {
 export function TaskQueuePanel({
   tasks, visiblePlan, planRunActive, completedPlanTasks, runningPlanTasks, waitingPlanTasks,
   failedPlanTasks, blockedPlanTasks, cancelledPlanTasks, tasksById, dependentsByTaskId,
-  runningTaskId, onRun, onCancel, onRunPlan
+  runningTaskId, providerReady, onRun, onCancel, onRunPlan
 }: TaskQueuePanelProps) {
   return (
     <section className="activity-panel" aria-label="Task plan and execution queue">
@@ -52,7 +53,7 @@ export function TaskQueuePanel({
             <b>{visiblePlan.summary}</b>
             <small>{completedPlanTasks}/{visiblePlan.tasks.length} complete · {runningPlanTasks} running · {waitingPlanTasks} ready · {failedPlanTasks} failed · {blockedPlanTasks} blocked · {cancelledPlanTasks} cancelled</small>
           </div>
-          <button className="secondary-button" disabled={planRunActive || waitingPlanTasks === 0} onClick={onRunPlan} type="button">{planRunActive ? "Running plan…" : "Run plan"}</button>
+          <button className="secondary-button" disabled={!providerReady || planRunActive || waitingPlanTasks === 0} onClick={onRunPlan} type="button">{planRunActive ? "Running plan…" : "Run plan"}</button>
           <progress aria-label="Completed plan tasks" max={visiblePlan.tasks.length} value={completedPlanTasks} />
         </div>
         <ol className="plan-flow" aria-label="Task dependency flow">
@@ -71,7 +72,7 @@ export function TaskQueuePanel({
           return <article className="task-row" key={task.id}>
             <span className={`task-status-mark status-${task.status}`} aria-hidden="true" />
             <div className="task-copy"><b>{task.title}</b><small>{task.role} · <span className={`text-status status-${task.status}`}>{task.status.replaceAll("_", " ")}</span>{retries > 0 ? ` · ${retries} retries` : ""}</small>{prerequisites.length > 0 && <small className="task-relations">Depends on: {prerequisites.join(", ")}</small>}{dependents.length > 0 && <small className="task-relations">Unlocks: {dependents.join(", ")}</small>}</div>
-            {task.status === "ready" && <button className="secondary-button" disabled={Boolean(runningTaskId) || planRunActive} onClick={() => onRun(task.id)} type="button">Run</button>}
+            {task.status === "ready" && <button className="secondary-button" disabled={!providerReady || Boolean(runningTaskId) || planRunActive} onClick={() => onRun(task.id)} type="button">Run</button>}
             {runningTaskId === task.id && <button className="secondary-button" onClick={() => onCancel(task.id)} type="button">Stop</button>}
           </article>;
         }) : <div className="empty-state">No execution tasks yet. Create a task in Agent to begin.</div>}

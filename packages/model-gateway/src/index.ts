@@ -138,17 +138,83 @@ export class GeminiAdapter implements ModelAdapter {
 }
 
 const ollamaResponseSchema = z.object({ message: z.object({ content: z.string().default(""), tool_calls: z.array(z.object({ id: z.string().optional(), function: z.object({ name: z.string(), arguments: z.unknown() }) })).default([]) }), prompt_eval_count: z.number().optional(), eval_count: z.number().optional() }).passthrough();
+const ollamaTagsSchema = z.object({ models: z.array(z.object({ name: z.string().min(1) }).passthrough()) }).passthrough();
+const timedOllamaTextFetch = async (fetcher: typeof fetch, input: RequestInfo | URL, init: RequestInit, options: ModelRequestOptions, maxBytes: number): Promise<{ response: Response; text: string }> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("Ollama request timed out")), options.timeoutMs ?? 60_000);
+  const abort = () => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await fetcher(input, { ...init, signal: controller.signal });
+    const declaredBytes = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+      await response.body?.cancel();
+      throw new Error(`Ollama response exceeds the ${maxBytes}-byte limit`);
+    }
+    if (!response.body) return { response, text: "" };
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+          await reader.cancel();
+          throw new Error(`Ollama response exceeds the ${maxBytes}-byte limit`);
+        }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return { response, text: new TextDecoder().decode(bytes) };
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(options.signal?.aborted ? "Ollama request cancelled" : "Ollama request timed out");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abort);
+  }
+};
+export type OllamaAvailability = { status: "connected"; models: string[] } | { status: "authentication_required" | "rate_limited" | "unsupported" | "unavailable"; models: []; error: string };
 export class OllamaAdapter implements ModelAdapter {
   readonly providerId = "ollama";
   constructor(private readonly baseUrl = "http://127.0.0.1:11434", private readonly fetcher: typeof fetch = fetch, private readonly defaultModel?: string) { const url = new URL(baseUrl); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid Ollama base URL"); }
   getCapabilities(): ModelCapabilities { return { streaming: false, toolCalling: true, structuredOutput: true, vision: false, supportsCancellation: true }; }
+  async checkAvailability(timeoutMs = 2500): Promise<OllamaAvailability> {
+    let response: Response; let text: string;
+    try { ({ response, text } = await timedOllamaTextFetch(this.fetcher, new URL("/api/tags", this.baseUrl), { method: "GET" }, { timeoutMs }, 256_000)); }
+    catch (error) {
+      if (error instanceof Error && error.message.includes("exceeds the")) return { status: "unsupported", models: [], error: "Ollama model-list response exceeded the 256000-byte limit" };
+      const message = error instanceof Error && error.message.includes("timed out") ? "Ollama did not respond before the connection check timed out" : "Cannot reach the configured Ollama service";
+      return { status: "unavailable", models: [], error: message };
+    }
+    if (response.status === 401 || response.status === 403) return { status: "authentication_required", models: [], error: "The configured Ollama endpoint requires authentication" };
+    if (response.status === 429) return { status: "rate_limited", models: [], error: "The configured Ollama endpoint is rate limited; try again shortly" };
+    if (response.status === 404) return { status: "unsupported", models: [], error: "The configured service does not expose the Ollama /api/tags endpoint" };
+    if (!response.ok) return { status: "unavailable", models: [], error: `Ollama availability check failed with HTTP ${response.status}` };
+    try {
+      const data = ollamaTagsSchema.parse(JSON.parse(text) as unknown);
+      return { status: "connected", models: data.models.map((model) => model.name) };
+    } catch {
+      return { status: "unsupported", models: [], error: "Ollama returned an unsupported model-list response" };
+    }
+  }
   async generate(request: ModelRequest, options: ModelRequestOptions = {}): Promise<ModelResponse> {
     const model = request.model ?? this.defaultModel; if (!model) throw new Error("Select an Ollama model id");
     const messages = [{ role: "system", content: request.system }, ...request.messages.map((message) => ({ role: message.role === "assistant" ? "assistant" : message.role, content: message.content, ...(message.toolName ? { tool_name: message.toolName } : {}), ...(message.role === "assistant" && message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ function: { name: call.name, arguments: call.input } })) } : {}) }))];
     const tools = request.tools?.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters ?? { type: "object", properties: {} } } }));
-    const response = await timedFetch(this.fetcher, new URL("/api/chat", this.baseUrl), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, messages, stream: false, ...(tools?.length ? { tools } : {}) }) }, options);
+    const body = JSON.stringify({ model, messages, stream: false, ...(tools?.length ? { tools } : {}) });
+    if (new TextEncoder().encode(body).byteLength > 1_000_000) throw new Error("Ollama request exceeds the 1000000-byte limit");
+    const { response, text } = await timedOllamaTextFetch(this.fetcher, new URL("/api/chat", this.baseUrl), { method: "POST", headers: { "content-type": "application/json" }, body }, options, 2_000_000);
     if (!response.ok) throw await providerError("Ollama", response);
-    const data = ollamaResponseSchema.parse(await response.json()); const toolCalls: ToolCall[] = data.message.tool_calls.map((call, index) => ({ id: call.id ?? `ollama-call-${index}`, name: call.function.name, input: call.function.arguments }));
+    let payload: unknown;
+    try { payload = JSON.parse(text) as unknown; }
+    catch { throw new Error("Ollama returned malformed JSON"); }
+    const data = ollamaResponseSchema.parse(payload); const toolCalls: ToolCall[] = data.message.tool_calls.map((call, index) => ({ id: call.id ?? `ollama-call-${index}`, name: call.function.name, input: call.function.arguments }));
     return { content: data.message.content, toolCalls, finishReason: toolCalls.length ? "tool_calls" : "stop", usage: { inputTokens: data.prompt_eval_count, outputTokens: data.eval_count } };
   }
 }

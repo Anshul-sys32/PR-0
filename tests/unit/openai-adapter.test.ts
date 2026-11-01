@@ -48,4 +48,44 @@ describe("other provider adapters", () => {
     expect(response).toMatchObject({ content: "Local answer", toolCalls: [{ id: "ollama-call-0", name: "filesystem.read", input: { path: "README.md" } }], usage: { inputTokens: 8, outputTokens: 3 } });
     expect(fetcher.mock.calls[0]![0]).toBeInstanceOf(URL);
   });
+
+  it("reports Ollama connectivity and discovered model tags from a valid response", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ models: [{ name: "qwen2.5-coder:7b" }, { name: "llama3.2:latest" }] }), { status: 200 }));
+    const adapter = new OllamaAdapter("http://127.0.0.1:11434", fetcher);
+    await expect(adapter.checkAvailability()).resolves.toEqual({ status: "connected", models: ["qwen2.5-coder:7b", "llama3.2:latest"] });
+    expect(fetcher.mock.calls[0]![0]).toEqual(new URL("http://127.0.0.1:11434/api/tags"));
+  });
+
+  it("classifies Ollama authentication, rate limiting, unsupported endpoints, and malformed responses", async () => {
+    for (const [status, expected] of [[401, "authentication_required"], [429, "rate_limited"], [404, "unsupported"]] as const) {
+      const adapter = new OllamaAdapter("http://127.0.0.1:11434", vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status })));
+      await expect(adapter.checkAvailability()).resolves.toMatchObject({ status: expected, models: [] });
+    }
+    const malformed = new OllamaAdapter("http://127.0.0.1:11434", vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ models: [{ name: "" }] }), { status: 200 })));
+    await expect(malformed.checkAvailability()).resolves.toMatchObject({ status: "unsupported", models: [] });
+    const emptyBody = new OllamaAdapter("http://127.0.0.1:11434", vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 })));
+    await expect(emptyBody.checkAvailability()).resolves.toMatchObject({ status: "unsupported", models: [] });
+    const oversized = new OllamaAdapter("http://127.0.0.1:11434", vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200, headers: { "content-length": "300000" } })));
+    await expect(oversized.checkAvailability()).resolves.toMatchObject({ status: "unsupported", models: [] });
+  });
+
+  it("reports an unreachable Ollama service without fabricating a response", async () => {
+    const adapter = new OllamaAdapter("http://127.0.0.1:11434", vi.fn<typeof fetch>().mockRejectedValue(new Error("socket unavailable")));
+    await expect(adapter.checkAvailability()).resolves.toEqual({ status: "unavailable", models: [], error: "Cannot reach the configured Ollama service" });
+  });
+
+  it("bounds Ollama availability checks with a timeout", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+    }));
+    const adapter = new OllamaAdapter("http://127.0.0.1:11434", fetcher);
+    await expect(adapter.checkAvailability(1)).resolves.toMatchObject({ status: "unavailable", error: "Ollama did not respond before the connection check timed out" });
+  });
+
+  it("rejects oversized Ollama request bodies before making a network call", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const adapter = new OllamaAdapter("http://127.0.0.1:11434", fetcher);
+    await expect(adapter.generate({ model: "local-tag", system: "", messages: [{ role: "user", content: "x".repeat(1_000_001) }] })).rejects.toThrow("Ollama request exceeds");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

@@ -598,7 +598,31 @@ export async function createApp(config: Config, database = new DatabaseService(c
       if (agentWrite) agentWriteExecutingTasks.delete(approval.taskId);
     }
   });
-  app.get("/api/providers", async () => { const modelIds: Record<string, string | undefined> = { mock: "mock", openai: config.OPENAI_MODEL, anthropic: config.ANTHROPIC_MODEL, gemini: config.GEMINI_MODEL, ollama: config.OLLAMA_MODEL }; return { providers: registry.list().map((id) => ({ id, configured: true, defaultModel: modelIds[id] ?? null, capabilities: registry.get(id).getCapabilities(modelIds[id] ?? "user-selected") })), unavailable: [!config.OPENAI_API_KEY && "openai", !config.ANTHROPIC_API_KEY && "anthropic", !config.GEMINI_API_KEY && "gemini"].filter(Boolean) }; });
+  app.get("/api/providers", async () => {
+    const modelIds: Record<string, string | undefined> = { mock: "mock", openai: config.OPENAI_MODEL, anthropic: config.ANTHROPIC_MODEL, gemini: config.GEMINI_MODEL, ollama: config.OLLAMA_MODEL };
+    const registeredOllama = registry.get("ollama");
+    const ollamaAvailability = registeredOllama instanceof OllamaAdapter
+      ? await registeredOllama.checkAvailability()
+      : { status: "unverified" as const, models: [] as string[] };
+    const configuredProviders = new Set(registry.list());
+    return {
+      providers: registry.list().map((id) => {
+        const isOllama = id === "ollama";
+        const status = id === "mock" ? "test" : isOllama ? ollamaAvailability.status : configuredProviders.has(id) ? "configured" : "authentication_required";
+        return {
+          id,
+          configured: id === "mock" || configuredProviders.has(id),
+          integrationType: id === "mock" ? "test" : isOllama ? "local" : "api",
+          status,
+          defaultModel: modelIds[id] ?? null,
+          models: isOllama && ollamaAvailability.status === "connected" ? ollamaAvailability.models : [],
+          ...(isOllama && "error" in ollamaAvailability ? { error: ollamaAvailability.error } : {}),
+          capabilities: registry.get(id).getCapabilities(modelIds[id] ?? "user-selected")
+        };
+      }),
+      unavailable: [!config.OPENAI_API_KEY && "openai", !config.ANTHROPIC_API_KEY && "anthropic", !config.GEMINI_API_KEY && "gemini"].filter(Boolean)
+    };
+  });
   app.post("/api/files/read", async (request, reply) => { const body = request.body as { projectId?: string; path?: string }; if (!body.projectId || !body.path) return reply.code(400).send({ error: "projectId and path are required" }); return { file: await readProjectFile(body.projectId, body.path) }; });
   app.post("/api/files/list", async (request, reply) => { const body = request.body as { projectId?: string; path?: string; maxEntries?: number }; if (!body.projectId) return reply.code(400).send({ error: "projectId is required" }); const input = filesystemListInputSchema.parse({ path: body.path, maxEntries: body.maxEntries }); return { listing: await listProjectFiles(body.projectId, input.path, input.maxEntries) }; });
   app.post("/api/files/search", async (request, reply) => { const body = request.body as { projectId?: string; path?: string; query?: string; maxResults?: number }; if (!body.projectId) return reply.code(400).send({ error: "projectId is required" }); const input = filesystemSearchInputSchema.parse({ path: body.path, query: body.query, maxResults: body.maxResults }); return { search: await searchProjectFiles(body.projectId, input.path, input.query, input.maxResults) }; });

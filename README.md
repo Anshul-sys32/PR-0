@@ -41,7 +41,7 @@ The project is evolving. The table below describes the current product direction
 | Area | Direction |
 |---|---|
 | **Agent workspace** | A unified place to prompt the agent, inspect progress, and follow task execution. |
-| **Model providers** | A modular provider layer for configured AI backends, with a mock option for development. |
+| **Model providers** | Existing OpenAI, Anthropic, and Gemini API adapters; local Ollama is the normal default; Mock is an explicit test-only option. |
 | **Task planning** | Break requests into steps and make execution progress easier to follow. |
 | **Project tools** | Work with files and workspace context through controlled tools. |
 | **Terminal workflows** | Run development commands and inspect output where supported and enabled. |
@@ -51,7 +51,9 @@ The project is evolving. The table below describes the current product direction
 
 ### Multi-model development
 
-PR-0 aims to keep provider integrations modular rather than tying the product to a single model. Depending on implemented adapters and local configuration, the intended direction includes providers such as OpenAI, Google Gemini, Anthropic Claude, and compatible local inference services such as Ollama.
+PR-0 keeps provider integrations modular rather than tying the product to a single model. Implemented adapters include OpenAI, Google Gemini, Anthropic Claude, and local Ollama. Ollama is selected by default and can run without a separate paid API key; the UI checks whether the local service is reachable and shows installed model tags. Mock remains available only as a deterministic test adapter and never calls a real model.
+
+PR-0 does not automate logged-in consumer AI websites. Provider terms reviewed for OpenAI and Anthropic do not authorize the requested browser automation; Google's terms do not explicitly authorize automating Gemini Apps as a model API. Use the supported Gemini API adapter or local Ollama instead. See [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
 
 Different models may be better suited to different tasks—for example, frontend design, backend reasoning, debugging, or research. Provider routing and specialized agent roles should be treated as configurable capabilities, not a guarantee that every role or provider is available in every build.
 
@@ -82,7 +84,14 @@ See [`UI-UX.md`](UI-UX.md) for the detailed interface specification. The specifi
 - **Playwright Chromium** for browser automation and browser tests
 - Optional: credentials for a supported AI provider, or a compatible local model service
 
-The mock provider can be used for development flows that do not require a live model. Real provider use depends on adapter support, credentials, model availability, and configuration.
+The local Ollama provider is selected by default. To use it, install Ollama, start its local service, and pull a model, for example:
+
+```bash
+ollama serve
+ollama pull qwen2.5-coder:7b
+```
+
+Refresh provider status in Task options. PR-0 will report installed model tags and requires a selected model before planning or execution. The Mock provider can be selected explicitly for deterministic UI/test flows; it does not generate real feature work. Hosted provider use still depends on credentials, model availability, and configuration.
 
 ### 1. Clone the repository
 

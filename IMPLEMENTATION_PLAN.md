@@ -41,43 +41,21 @@
 
 ## Verification recorded in this resume
 
-- `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web workspaces on this resume.
-- `npm test`: passed, 7 test files and 70 tests on this resume.
-- `npx vitest run tests/integration/api.test.ts`: passed, 17 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, SSE progress, browser/research URL rejection, Git patch/history, and checkpoint rollback safeguards.
-- `npx vitest run tests/unit/web-research.test.ts`: passed URL, IP-range, DNS-mixing, and address-pinning policy cases without outbound network calls.
-- `npx vitest run tests/unit/browser-automation.test.ts`: passed 2 Chromium-backed tests using a mocked fetcher to verify navigation, local text-field interaction, screenshot capture, and blocked subresources.
-- `npm run build`: passed across all packages on this resume; Vite reports a non-blocking recommendation to switch React plugins for Rolldown performance.
-- `git diff --check`: passed.
-- `npx vitest run tests/integration/api.test.ts`: passed, 19 tests after adding the model-requested write approval lifecycle, sensitive-path rejection, cancellation, and restart invalidation cases.
-- `npx vitest run tests/unit/contracts.test.ts`: passed, 7 tests including common credential assignment, private-key, AWS key, and GitHub token patterns.
-- `npm run test:browser`: passed, 2 Chromium workflows on this resume, covering memory add/edit/delete and secret feedback, plus approval preview/approve/reject.
-- `git diff --check`: passed on this resume.
-- `npx vitest run tests/integration/api.test.ts`: passed, 19 tests on this resume; the focused model-write lifecycle test also passed with capped preview and credential-content rejection assertions.
-- `get_errors` reported no diagnostics in the touched server and API integration test files.
-- The Git status and numstat integration test passed against a disposable repository initialized during the test.
-- The strict web side-effect import check (`npx tsc --noEmit -p apps/web/tsconfig.json --noUncheckedSideEffectImports`) passed.
-- Browser smoke check confirmed the UI connects to the API, rejects loopback URLs, and inspects `https://example.org/` through the pinned fetcher; no project was created in the development database.
-- `get_errors` reported no diagnostics in the touched TypeScript, prompt, and test files after the latest full verification.
-- Focused agent-loop and API integration checks passed (19 tests), covering persisted retry counts across SQLite reopen and duplicate active task/plan run conflicts.
-- Real cloud provider connectivity and arbitrary-site compatibility remain unverified; the live public-page smoke check covered Example Domain only. Sandbox-restricted bind/process behavior also remains unverified.
+- `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web.
+- `npm test`: passed, 7 test files and 76 tests.
+- `npm run build`: passed across all workspaces. Vite emitted only its existing non-blocking React plugin performance recommendation.
+- `npm run test:browser`: passed, 4 workflows, including an API-backed task create/run after explicitly selecting test-only Mock, Ollama-default UI, approval/memory safety, and responsive navigation.
+- `npx vitest run tests/unit/openai-adapter.test.ts`: passed, 10 tests including Ollama availability, auth/rate-limit/unsupported/malformed/unavailable/timeout cases, and request/response size limits using mocked fetch.
+- `npx vitest run tests/integration/api.test.ts`: passed, 20 tests including provider status metadata and discovered local model tags via mocked Ollama response.
+- `git diff --check`: passed after provider implementation and documentation updates.
+- No real Ollama daemon/model or cloud provider credentials were available; live inference and provider account connectivity were not tested. No consumer AI websites were automated.
 
-- [x] Finish Phase 5 UI: add a Run plan control and poll/display plan-level execution progress; persist transient provider retry attempts and expose their count; verify duplicate active task/plan runs return conflicts.
-- [x] Complete Phase 6 real-time plan updates with SSE and improve task-plan visualization with an ordered dependency flow and named prerequisites.
-- [x] Implement browser automation and public web research with strict network controls: user-submitted HTTPS pages use public-IP DNS pinning, redirect rejection, bounded text retrieval, and an isolated Playwright context with JavaScript/subresources disabled, GET-only validated navigation, and restricted selector actions.
-- [x] Complete Git integration with sensitive-path-filtered patch viewing, bounded commit history, clean-worktree checkpoint tags, preview-bound rollback with explicit confirmation and a backup tag, plus project-wide prerequisite/dependent task relationships.
-- [x] Harden project memory retrieval with exact normalized token matching and legacy-secret filtering; centralize credential-like value detection and cover memory add/edit/delete/rejection in Playwright browser tests.
-- [x] Complete hardening, security coverage, browser tests, and release documentation: serialize cancellation against approved agent writes, test credential rejection and bounded previews, document the local-only security boundary, and add release readiness checks.
 
 ## In-progress MVP capability
 
-- [x] Expose model-requested `filesystem.write` as a supervised tool that atomically queues a persisted approval, pauses execution in `waiting_for_approval`, shows a bounded proposed-content preview, writes only after approval, resumes the model for verification, and leaves files unchanged on rejection/cancellation. Sensitive paths and credential-like write content are blocked. Restart recovery fails the interrupted task and invalidates its pending agent-write approval.
-- [x] Finish full regression verification for the write-loop and memory changes. API integration tests cover model-proposed write pause/approve/reject/cancel/restart, credential rejection, bounded previews, and concurrent approval/cancellation outcomes. Browser UI tests cover preview/approve/reject on the supervised-write API.
-
-## Architectural decisions
-
 - The first persistence implementation uses Node's built-in `node:sqlite` driver to keep local setup small and deterministic. The repository isolates persistence behind `DatabaseService`, so Drizzle can replace it without changing callers.
 - Provider credentials are deliberately not stored in application tables; cloud provider credentials are read from server environment only and are never returned by the API. The UI can select configured providers, but credential entry is managed through server configuration rather than persisted secret management.
-- The mock provider is the default and powers the acceptance workflow without paid credentials.
+- Local Ollama is the normal UI provider choice and uses its documented HTTP API without a separate paid provider key. The deterministic mock adapter remains available only as an explicit test-only choice; it is not a real model.
 - Task cancellation is cooperative: API cancellation aborts the active model request, the agent loop checks cancellation before tool dispatch, and cancelled task state is preserved after the run unwinds.
 
 ## Known blockers
@@ -89,5 +67,16 @@
 - Model-requested writes pause the current in-memory agent loop. If the server restarts while awaiting approval, recovery marks the task failed and invalidates the approval rather than resuming the model conversation; the user can create a new task after restart.
 - Once an agent-write approval is claimed for execution, cancellation returns HTTP 409 until the write completes. If cancellation wins before approval is claimed, the pending operation is rejected and no file is written.
 - The API does not authenticate callers and must remain bound to loopback; CORS is not an authorization boundary. See `docs/RELEASE.md` before preparing a candidate.
+- No consumer AI website browser provider is implemented: current reviewed terms do not explicitly authorize the requested automation for OpenAI/Anthropic consumer services, and Google's terms prohibit automated access that violates machine-readable site instructions. Use the existing official API adapters or the documented local Ollama integration instead.
+- Ollama reachability and installed model tags are now checked through a bounded `/api/tags` probe, but live Ollama inference remains unverified until an operator runs a local daemon and pulls a model.
+- Ollama status checks time out after 2.5 seconds and cap model-list responses at 256 KB; inference requests cap serialized payloads at 1 MB, response bodies at 2 MB, and use the configured 60-second default provider timeout with cancellation propagation.
 - A compiled-server bind smoke test is blocked by the execution sandbox (`EPERM` when binding loopback), not by an application startup error. SQLite itself was smoke-tested successfully in Node 22.
 - The execution sandbox also rejects child-process spawning with `EPERM`. Terminal session persistence and approval workflows are integration-tested, but successful subprocess output must be verified on a normal local host.
+
+## Provider integration follow-up
+
+- [x] Audit provider contracts, server registration, UI selection, agent tool loop, docs, and baseline. Baseline `npm run typecheck`, `npm test` (70 tests), and `npm run build` passed before edits.
+- [x] Verify consumer browser-provider authorization before implementation. No reviewed consumer-site terms explicitly permit this PR-0 automation; no login/session automation or credential extraction was added.
+- [x] Make Ollama the normal UI provider, keep Mock explicitly test-only, report actual local service status/model tags, and gate model execution on provider/model readiness.
+- [x] Add deterministic Ollama status/normalization tests and a mocked API provider-status integration test.
+- [ ] Verify a real local Ollama install/model end to end; no daemon/model is available in this test environment.

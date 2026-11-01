@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import { createApp } from "../../apps/server/src/app.js";
 import { DatabaseService } from "../../apps/server/src/db.js";
 import type { FastifyInstance } from "fastify";
 import type { ModelAdapter, ModelRequest, ModelRequestOptions, ModelResponse } from "@pr-0/model-gateway";
+import { OllamaAdapter } from "@pr-0/model-gateway";
 
 class AbortableTestAdapter implements ModelAdapter {
   readonly providerId = "ollama";
@@ -99,6 +100,18 @@ let app: FastifyInstance; let directory: string;
 beforeAll(async () => { directory = mkdtempSync(join(tmpdir(), "pr0-test-")); app = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "test.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 3, MAX_TOOL_STEPS_PER_TASK: 40 }, undefined, [new AbortableTestAdapter()]); });
 afterAll(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
 describe("local workflow", () => {
+  it("reports live local-provider availability and discovered models without API credentials", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ models: [{ name: "qwen2.5-coder:7b" }] }), { status: 200 }));
+    const providerApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "provider-status.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 2, MAX_TOOL_STEPS_PER_TASK: 40 }, undefined, [new OllamaAdapter("http://127.0.0.1:11434", fetcher)]);
+    try {
+      const response = await providerApp.inject("/api/providers");
+      const local = response.json().providers.find((provider: { id: string }) => provider.id === "ollama");
+      expect(local).toMatchObject({ configured: true, integrationType: "local", status: "connected", models: ["qwen2.5-coder:7b"] });
+      expect(response.json().providers.find((provider: { id: string }) => provider.id === "mock")).toMatchObject({ integrationType: "test", status: "test" });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally { await providerApp.close(); }
+  });
+
   it("rejects non-HTTPS and local destinations for public web research", async () => {
     for (const url of ["http://example.org/page", "https://127.0.0.1/", "https://localhost/"]) {
       const response = await app.inject({ method: "POST", url: "/api/web/research", payload: { url } });

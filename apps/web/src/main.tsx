@@ -12,7 +12,8 @@ type Task = { id: string; title: string; status: string; role: string; descripti
 type TaskPlan = { id: string; projectId: string; summary: string; tasks: Task[] };
 type PublicResearchResult = { url: string; title: string; text: string };
 type BrowserAutomationResult = { url: string; title: string; text: string; links: string[]; screenshotBase64: string; actions: Array<{ type: string; selector: string; ok: boolean; message: string }> };
-type Provider = { id: string; configured: boolean; defaultModel: string | null };
+type ProviderStatus = "test" | "configured" | "connected" | "authentication_required" | "rate_limited" | "unsupported" | "unavailable" | "unverified";
+type Provider = { id: string; configured: boolean; defaultModel: string | null; integrationType?: "api" | "local" | "test"; status?: ProviderStatus; models?: string[]; error?: string };
 type Conversation = { id: string; projectId: string; createdAt: string };
 type ChatMessage = { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string };
 type FileEntry = { name: string; path: string; type: "file" | "directory" | "symlink" | "other" };
@@ -40,7 +41,7 @@ function App() {
   const [projectError, setProjectError] = useState("");
   const [approvalBusyId, setApprovalBusyId] = useState<string>();
   const [taskCreating, setTaskCreating] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connecting to local workspace…"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "mock", configured: true, defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("mock"); const [modelId, setModelId] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connecting to local workspace…"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "ollama", configured: true, integrationType: "local", status: "unverified", defaultModel: null, models: [] }, { id: "mock", configured: true, integrationType: "test", status: "test", defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("ollama"); const [modelId, setModelId] = useState(""); const [providersLoading, setProvidersLoading] = useState(false);
   const [agentRole, setAgentRole] = useState("orchestrator");
   const [runningTaskId, setRunningTaskId] = useState<string>();
   const [dependencyId, setDependencyId] = useState("");
@@ -91,6 +92,22 @@ function App() {
   const [browserValue, setBrowserValue] = useState("");
   const [browserRunning, setBrowserRunning] = useState(false);
   const [browserResult, setBrowserResult] = useState<BrowserAutomationResult | null>(null);
+  const providerCanExecute = () => {
+    const selected = providers.find((provider) => provider.id === providerId);
+    if (!selected || unavailableProviders.includes(providerId)) return false;
+    if (providerId === "mock") return true;
+    if (!modelId.trim() && !selected.defaultModel) return false;
+    return selected.status === "configured" || selected.status === "connected";
+  };
+  const providerBlockedReason = () => {
+    const selected = providers.find((provider) => provider.id === providerId);
+    if (providerId === "ollama" && selected?.status === "unavailable") return selected.error ?? "Ollama is not reachable. Start Ollama and refresh provider status.";
+    if (selected?.status === "authentication_required") return `${providerId} requires authentication or a server API credential.`;
+    if (selected?.status === "rate_limited") return `${providerId} is rate limited. Try again later.`;
+    if (selected?.status === "unsupported") return selected.error ?? `${providerId} endpoint is unsupported.`;
+    if (providerId !== "mock" && !modelId.trim() && !selected?.defaultModel) return `Select an installed ${providerId} model before running tasks.`;
+    return `Configure ${providerId} and refresh provider status before running tasks.`;
+  };
   const load = async (preferredProject?: Project) => { const data = await api<{ projects: Project[] }>("/projects"); setProjects(data.projects); const project = preferredProject ?? active ?? data.projects[0]; setActive(project); if (!project) {
     setTasks([]); setResult(""); setConversations([]); setActiveConversationId(undefined); setMessages([]); setApprovals([]); setTerminalSessions([]); setMemories([]); setUsage(undefined); setTodos([]);
     return;
@@ -119,7 +136,18 @@ function App() {
   setUsage(usageData.usage);
   setTodos(todoData.todos);
   };
-  useEffect(() => { void load().then(() => setStatus("Connected to local API")).catch((error: Error) => setStatus(error.message)); void api<{ providers: Provider[]; unavailable: string[] }>("/providers").then((data) => { setProviders(data.providers); setUnavailableProviders(data.unavailable); }).catch((error: Error) => setStatus(error.message)); }, []);
+  const refreshProviders = async () => {
+    setProvidersLoading(true);
+    try {
+      const data = await api<{ providers: Provider[]; unavailable: string[] }>("/providers");
+      setProviders(data.providers);
+      setUnavailableProviders(data.unavailable);
+      const selected = data.providers.find((provider) => provider.id === providerId);
+      if (selected && !modelId.trim()) setModelId(selected.defaultModel ?? selected.models?.[0] ?? "");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not refresh provider status"); }
+    finally { setProvidersLoading(false); }
+  };
+  useEffect(() => { void load().then(() => setStatus("Connected to local API")).catch((error: Error) => setStatus(error.message)); void refreshProviders(); }, []);
   useEffect(() => {
     if (!projectDialogOpen && !rollbackConfirmOpen) return;
     const handleDialogKey = (event: KeyboardEvent) => {
@@ -168,8 +196,9 @@ function App() {
     } catch (error) { setStatus(error instanceof Error ? error.message : "Could not create task"); }
     finally { setTaskCreating(false); }
   };
-  const chooseProvider = (id: string) => { setProviderId(id); setModelId(providers.find((provider) => provider.id === id)?.defaultModel ?? ""); };
+  const chooseProvider = (id: string) => { const provider = providers.find((item) => item.id === id); setProviderId(id); setModelId(provider?.defaultModel ?? provider?.models?.[0] ?? ""); };
   const run = async (task: Task) => {
+    if (!providerCanExecute()) { setStatus(providerBlockedReason()); return; }
     setRunningTaskId(task.id);
     setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: "running" } : item));
     setStatus(`${providerId} model is executing…`);
@@ -405,7 +434,7 @@ function App() {
     catch (error) { setStatus(error instanceof Error ? error.message : "Could not delete TODO"); }
   };
   const generatePlan = async () => {
-    if (!active || !message.trim()) return;
+    if (!active || !message.trim() || !providerCanExecute()) { if (!providerCanExecute()) setStatus(providerBlockedReason()); return; }
     setPlanning(true); setStatus("Generating a task plan…");
     try {
       const data = await api<{ plan: TaskPlan }>(`/projects/${active.id}/plan`, { method: "POST", body: JSON.stringify({ description: message.trim(), providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
@@ -419,7 +448,7 @@ function App() {
     finally { setPlanning(false); }
   };
   const runPlan = async () => {
-    if (!activePlan) return;
+    if (!activePlan || !providerCanExecute()) { if (!providerCanExecute()) setStatus(providerBlockedReason()); return; }
     setStatus("Starting task plan…");
     try {
       await api<{ planId: string; status: "running"; taskIds: string[] }>(`/task-plans/${activePlan.id}/run`, { method: "POST", body: JSON.stringify({ providerId, ...(modelId.trim() ? { modelId: modelId.trim() } : {}) }) });
@@ -458,8 +487,14 @@ function App() {
   const failedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "failed").length ?? 0;
   const blockedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "blocked").length ?? 0;
   const cancelledPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "cancelled").length ?? 0;
-  const unavailableSelectedProvider = unavailableProviders.includes(providerId);
   const activeProvider = providers.find((provider) => provider.id === providerId);
+  const unavailableSelectedProvider = unavailableProviders.includes(providerId) || ["unavailable", "authentication_required", "rate_limited", "unsupported"].includes(activeProvider?.status ?? "");
+  const providerReady = providerCanExecute();
+  const providerStatusText = providerId === "mock"
+    ? "Mock · explicit test mode"
+    : providerId === "ollama"
+      ? `Ollama · ${activeProvider?.status === "connected" ? modelId.trim() || activeProvider.defaultModel || "select a model" : activeProvider?.status?.replaceAll("_", " ") ?? "checking"}`
+      : `${providerId} · ${modelId.trim() || activeProvider?.defaultModel || "model required"}`;
   const pageTitles: Record<WorkspaceView, string> = { agent: "Agent", plans: "Plans & tasks", files: "Files", terminal: "Terminal", "source-control": "Source control", todos: "TODOs", memory: "Project memory", usage: "Model usage", approvals: "Approvals" };
   const tasksById = new Map(tasks.map((task) => [task.id, task]));
   const dependentsByTaskId = new Map<string, string[]>();
@@ -478,7 +513,7 @@ function App() {
           <div className="topbar-title"><small>{active?.name ?? "No workspace selected"}</small><h1>{pageTitles[activeView]}</h1></div>
           <div className="topbar-status">
             <span className={providerId === "mock" ? "provider-badge is-mock" : unavailableSelectedProvider ? "provider-badge is-unavailable" : "provider-badge"}>
-              {unavailableSelectedProvider ? `${providerId} unavailable` : providerId === "mock" ? "Mock · test mode · mock" : `${providerId} · ${modelId.trim() || activeProvider?.defaultModel || "model required"}`}
+              {providerStatusText}
             </span>
             <span className="connection-state" role="status" aria-live="polite">{status}</span>
           </div>
@@ -498,26 +533,29 @@ function App() {
             <div className="composer">
               <details className="composer-options"><summary>Task options <span>{agentRole} · {activeProvider?.id === "mock" ? "Mock provider" : providerId}</span></summary>
                 <div className="option-grid">
-                  <label>Provider<select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock · test only" : provider.id === "ollama" ? "Ollama · local" : `${provider.id} API`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id} disabled>{id} · credentials missing</option>)}</select></label>
-                  {providerId !== "mock" && <label>Model identifier<input aria-label="Model id" placeholder="Provider default" value={modelId} onChange={(event) => setModelId(event.target.value)} /></label>}
+                  <label>Provider<select aria-label="Model provider" value={providerId} onChange={(event) => chooseProvider(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id === "mock" ? "Mock · explicit test mode" : provider.id === "ollama" ? `Ollama · local · ${provider.status?.replaceAll("_", " ") ?? "checking"}` : `${provider.id} API · configured`}</option>)}{unavailableProviders.map((id) => <option key={id} value={id} disabled>{id} · credentials missing</option>)}</select></label>
+                  {providerId === "ollama" && activeProvider?.models?.length && !activeProvider.defaultModel
+                    ? <label>Installed local model<select aria-label="Model id" value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">Select installed model</option>{activeProvider.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+                    : providerId !== "mock" && <label>Model identifier<input aria-label="Model id" placeholder={activeProvider?.defaultModel ?? "Select or configure a model"} value={modelId} onChange={(event) => setModelId(event.target.value)} /></label>}
                   <label>Agent role<select aria-label="Agent role" value={agentRole} onChange={(event) => setAgentRole(event.target.value)}>{["orchestrator", "architect", "frontend", "backend", "debugger", "reviewer", "qa", "researcher", "documentation"].map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
                   <label>Prerequisite<select aria-label="Task prerequisite" value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}><option value="">None</option>{tasks.map((task) => <option key={task.id} value={task.id}>{task.title} ({task.status})</option>)}</select></label>
                 </div>
-                {unavailableSelectedProvider && <p className="inline-warning">Configure {providerId} credentials in the server environment before using this provider. No fallback will be selected.</p>}
+                <button className="secondary-button" disabled={providersLoading} onClick={() => void refreshProviders()} type="button">{providersLoading ? "Checking provider…" : "Refresh provider status"}</button>
+                {providerId !== "mock" && !providerReady && <p className="inline-warning" role="status">{providerBlockedReason()} No provider fallback will be selected.</p>}
               </details>
               <label className="sr-only" htmlFor="task-prompt">Development task</label>
-              <textarea id="task-prompt" aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!taskCreating && !unavailableSelectedProvider) void send(); } }} placeholder="Describe the change you want to make…" />
+              <textarea id="task-prompt" aria-label="Development task" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (!taskCreating) void send(); } }} placeholder="Describe the change you want to make…" />
               <div className="composer-footer">
                 <details className="research-options"><summary>Research tools</summary><div className="research-tool-fields"><div className="web-research-controls"><label className="sr-only" htmlFor="research-url">Public HTTPS URL</label><input id="research-url" type="url" placeholder="https://public-site.example/article" value={researchUrl} onChange={(event) => setResearchUrl(event.target.value)} /><button className="secondary-button" disabled={!researchUrl.trim() || researching} onClick={() => void researchPublicPage()} type="button">{researching ? "Researching…" : "Research page"}</button></div><div className="browser-controls"><select aria-label="Browser action" value={browserAction} onChange={(event) => setBrowserAction(event.target.value as typeof browserAction)}><option value="inspect">Inspect page</option><option value="click">Click link or details</option><option value="fill">Fill text field</option></select>{browserAction !== "inspect" && <input aria-label="Browser selector" placeholder="#search" value={browserSelector} onChange={(event) => setBrowserSelector(event.target.value)} />}{browserAction === "fill" && <input aria-label="Browser text value" maxLength={512} placeholder="Text to fill locally" value={browserValue} onChange={(event) => setBrowserValue(event.target.value)} />}<button className="secondary-button" disabled={!researchUrl.trim() || browserRunning || (browserAction !== "inspect" && !browserSelector.trim())} onClick={() => void automateBrowser()} type="button">{browserRunning ? "Inspecting…" : "Inspect in browser"}</button></div></div></details>
                 <span className="composer-hint">{active ? `${active.name} · Shift+Enter for a new line` : "Add a workspace to begin"}</span>
-                <div className="composer-actions"><button className="secondary-button" onClick={() => void generatePlan()} disabled={!active || !message.trim() || planning || planRunActive || taskCreating || unavailableSelectedProvider} type="button">{planning ? "Planning…" : "Plan first"}</button><button className="primary-button" onClick={() => void send()} disabled={!active || !message.trim() || taskCreating || unavailableSelectedProvider} type="button">{taskCreating ? "Creating…" : "Create task"}</button></div>
+                <div className="composer-actions"><button className="secondary-button" onClick={() => void generatePlan()} disabled={!active || !message.trim() || planning || planRunActive || taskCreating || !providerReady} type="button">{planning ? "Planning…" : "Plan first"}</button><button className="primary-button" onClick={() => void send()} disabled={!active || !message.trim() || taskCreating} type="button">{taskCreating ? "Creating…" : "Create task"}</button></div>
               </div>
             </div>
           </section>
-          <TaskQueuePanel tasks={tasks} visiblePlan={visiblePlan} planRunActive={planRunActive} completedPlanTasks={completedPlanTasks} runningPlanTasks={runningPlanTasks} waitingPlanTasks={waitingPlanTasks} failedPlanTasks={failedPlanTasks} blockedPlanTasks={blockedPlanTasks} cancelledPlanTasks={cancelledPlanTasks} tasksById={tasksById} dependentsByTaskId={dependentsByTaskId} runningTaskId={runningTaskId} onRun={(taskId) => { const task = tasksById.get(taskId); if (task) void run(task); }} onCancel={(taskId) => { const task = tasksById.get(taskId); if (task) void cancel(task); }} onRunPlan={() => void runPlan()} />
+          <TaskQueuePanel tasks={tasks} visiblePlan={visiblePlan} planRunActive={planRunActive} completedPlanTasks={completedPlanTasks} runningPlanTasks={runningPlanTasks} waitingPlanTasks={waitingPlanTasks} failedPlanTasks={failedPlanTasks} blockedPlanTasks={blockedPlanTasks} cancelledPlanTasks={cancelledPlanTasks} tasksById={tasksById} dependentsByTaskId={dependentsByTaskId} runningTaskId={runningTaskId} providerReady={providerReady} onRun={(taskId) => { const task = tasksById.get(taskId); if (task) void run(task); }} onCancel={(taskId) => { const task = tasksById.get(taskId); if (task) void cancel(task); }} onRunPlan={() => void runPlan()} />
         </div>}
 
-        {activeView === "plans" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">EXECUTION</p><h2>Plans & tasks</h2><p>Review dependencies and run ready tasks. Progress reflects persisted task states.</p></div><TaskQueuePanel tasks={tasks} visiblePlan={visiblePlan} planRunActive={planRunActive} completedPlanTasks={completedPlanTasks} runningPlanTasks={runningPlanTasks} waitingPlanTasks={waitingPlanTasks} failedPlanTasks={failedPlanTasks} blockedPlanTasks={blockedPlanTasks} cancelledPlanTasks={cancelledPlanTasks} tasksById={tasksById} dependentsByTaskId={dependentsByTaskId} runningTaskId={runningTaskId} onRun={(taskId) => { const task = tasksById.get(taskId); if (task) void run(task); }} onCancel={(taskId) => { const task = tasksById.get(taskId); if (task) void cancel(task); }} onRunPlan={() => void runPlan()} /></section>}
+        {activeView === "plans" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">EXECUTION</p><h2>Plans & tasks</h2><p>Review dependencies and run ready tasks. Progress reflects persisted task states.</p>{!providerReady && <p className="inline-warning" role="status">{providerBlockedReason()} Refresh provider status or choose an installed model before execution.</p>}</div><TaskQueuePanel tasks={tasks} visiblePlan={visiblePlan} planRunActive={planRunActive} completedPlanTasks={completedPlanTasks} runningPlanTasks={runningPlanTasks} waitingPlanTasks={waitingPlanTasks} failedPlanTasks={failedPlanTasks} blockedPlanTasks={blockedPlanTasks} cancelledPlanTasks={cancelledPlanTasks} tasksById={tasksById} dependentsByTaskId={dependentsByTaskId} runningTaskId={runningTaskId} providerReady={providerReady} onRun={(taskId) => { const task = tasksById.get(taskId); if (task) void run(task); }} onCancel={(taskId) => { const task = tasksById.get(taskId); if (task) void cancel(task); }} onRunPlan={() => void runPlan()} /></section>}
 
         {activeView === "files" && <section className="tool-view"><div className="view-intro"><p className="eyebrow">WORKSPACE</p><h2>Files</h2><p>Browse and search text in the active registered workspace.</p></div><div className="file-workspace"><section className="tool-section"><div className="file-toolbar"><button className="secondary-button" disabled={explorerPath === "." || !active} onClick={() => { const parent = explorerPath.split("/").slice(0, -1).join("/") || "."; void loadWorkspaceDirectory(parent); }} type="button">Up one level</button><span className="path-label">{explorerPath}</span><label className="sr-only" htmlFor="file-search">Search workspace files</label><input id="file-search" value={fileSearch} onChange={(event) => setFileSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchWorkspace(); }} placeholder="Search workspace files" /><button className="secondary-button" disabled={!active || !fileSearch.trim()} onClick={() => void searchWorkspace()} type="button">Search</button></div><div className="file-list" aria-label="Workspace files">
               {searchMatches.length ? searchMatches.map((match) => <button className="file-entry" key={`${match.path}:${match.line}`} onClick={() => void openWorkspaceFile(match.path)} type="button"><span aria-hidden="true">F</span><span>{match.path}:{match.line}</span><small>{match.text}</small></button>) : fileEntries.map((entry) => <button aria-disabled={entry.type === "symlink" || entry.type === "other"} className="file-entry" key={entry.path} disabled={entry.type === "symlink" || entry.type === "other"} onClick={() => entry.type === "directory" ? void loadWorkspaceDirectory(entry.path) : entry.type === "file" ? void openWorkspaceFile(entry.path) : undefined} type="button"><span aria-hidden="true">{entry.type === "directory" ? "D" : "F"}</span><span title={entry.path}>{entry.name}</span></button>)}</div>{!fileEntries.length && !searchMatches.length && <div className="empty-state">No entries in this directory.</div>}</section><section className="tool-section file-content"><h3>Preview</h3>{filePreview ? <><div className="path-label">{filePreview.path}</div><pre>{filePreview.content}</pre></> : <div className="empty-state">Select a text file to preview it. Files flagged as sensitive are excluded by the API.</div>}</section></div></section>}

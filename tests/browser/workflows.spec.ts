@@ -83,6 +83,9 @@ test("agent workflow creates and runs a task, with grouped navigation at desktop
   await page.goto("/");
   await page.getByLabel("Active workspace").selectOption(projectId);
   await expect(page.locator(".topbar-title small")).toHaveText("Agent workflow workspace");
+  await expect(page.getByLabel("Model provider")).toHaveValue("ollama");
+  await page.locator(".composer-options summary").click();
+  await page.getByLabel("Model provider").selectOption("mock");
 
   await page.getByRole("textbox", { name: "Development task" }).fill("Explain the `workspace` and **report** one useful next step");
   await page.getByRole("button", { name: "Create task" }).click();
