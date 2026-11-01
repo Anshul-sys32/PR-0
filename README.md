@@ -4,422 +4,298 @@
 
 ### One Workspace. Multiple AIs. Limitless Possibilities.
 
-**An extensible, multi-model AI coding agent designed to turn ideas into working software.**
+**An extensible, multi-model AI coding agent built to help turn ideas into working software.**
 
-Connect different AI models, delegate complex tasks, interact with your development environment, and orchestrate entire workflows from a unified workspace.
-
-<br>
+Plan tasks, work with project files, run development tools, and supervise AI-assisted workflows from one developer workspace.
 
 **Built for developers who want more than a chat window.**
+
+[Overview](#-what-is-pr-0) · [Features](#-capabilities) · [Quick start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap)
 
 </div>
 
 ---
 
+> [!NOTE]
+> **PR-0 is an early-stage project under active development.** Capabilities vary by provider and tool configuration. This README distinguishes implemented foundations from planned work; it does not imply that every feature described here is production-ready. Verify provider connectivity, terminal behavior, browser workflows, and security boundaries in your own environment before relying on them.
+
 ## 🧠 What Is PR-0?
 
-AI-powered development is evolving rapidly, but developers often have to switch between multiple tools to get their work done.
+AI development often means jumping between model providers, editors, terminals, documentation, browser tools, and task trackers. PR-0 explores bringing those parts of the workflow into one extensible workspace.
 
-One model might excel at designing beautiful interfaces. Another might be better suited for debugging, architectural reasoning, or backend development. Meanwhile, the actual work still requires access to files, terminals, browsers, documentation, and development tools.
+The core idea is straightforward: an AI coding agent should do more than generate a code snippet. It should help a developer:
 
-**PR-0 aims to bring these capabilities together into one extensible AI development environment.**
+1. Understand the requested outcome and relevant project context.
+2. Break complex work into manageable steps.
+3. Use configured models and tools for the task.
+4. Inspect files and propose or make changes within configured boundaries.
+5. Run available checks and inspect the results.
+6. Explain what changed, what succeeded, and what still needs attention.
 
-Instead of treating AI as a chatbot that merely generates code, PR-0 is designed around an agentic workflow:
+PR-0 is designed around **model choice, visible execution, developer control, and modularity**. Its long-term direction is a workspace in which different models and tools can contribute to a single, inspectable development workflow.
 
-1. Understand the user's objective.
-2. Break complex requests into manageable tasks.
-3. Select an appropriate AI model or delegate subtasks.
-4. Use available tools to inspect and modify the project.
-5. Execute commands and validate the results.
-6. Track progress and report what was accomplished.
+## ✨ Capabilities
 
-The long-term goal is to create a development agent that can collaborate with developers throughout the software development lifecycle.
+The project is evolving. The table below describes the current product direction and avoids treating every planned capability as complete.
 
-## ✨ Planned Features
-
-### 🤖 Multi-Model AI Orchestration
-
-Use multiple AI providers through a unified interface.
-
-- **Intelligent model routing:** Select models based on task requirements.
-- **Specialized agents:** Delegate frontend, backend, debugging, research, and testing tasks to suitable models.
-- **Provider abstraction:** Keep model integrations modular instead of tying the application to one provider.
-- **Configurable workflows:** Allow developers to choose models and customize agent behavior.
-- **Fallback strategies:** Respond gracefully to provider failures or unavailable models.
-
-The objective is not simply to connect multiple models, but to use them where they are most useful.
-
-### 💻 AI-Powered Coding Workspace
-
-Give AI agents the ability to work with real development projects.
-
-Planned capabilities include:
-
-- Read and analyze project files.
-- Create, edit, and refactor source code.
-- Search directories and inspect project structures.
-- Understand dependencies and configuration files.
-- Generate implementation plans before making changes.
-- Track tasks through a TODO system.
-- Review changes and explain modifications.
-
-### 🖥️ Terminal Integration
-
-Enable agents to interact with development environments through controlled terminal sessions.
-
-Potential use cases:
-
-- Install project dependencies.
-- Run development servers.
-- Execute build commands.
-- Run automated tests.
-- Inspect compiler errors and application logs.
-- Diagnose runtime failures.
-- Suggest and apply fixes based on command output.
-
-**Security principle:** Commands that can modify the system, delete data, access sensitive resources, or perform other risky operations should require appropriate restrictions and, where necessary, explicit user approval.
-
-### 🌐 Browser Automation & Web Research
-
-Bridge the gap between AI-generated code and the information needed to build it.
-
-Planned capabilities:
-
-- Search for technical documentation.
-- Retrieve and summarize web content.
-- Research APIs, libraries, and implementation approaches.
-- Automate supported browser workflows.
-- Inspect web applications during development.
-- Assist with repetitive browser-based tasks.
-
-Browser access is intended to be a tool available to the agent, not an unrestricted mechanism for bypassing website security or access controls.
-
-### 🎨 Specialized Frontend & Backend Agents
-
-Different development tasks require different strengths.
-
-PR-0 is designed to support specialized workflows such as:
-
-| Agent | Primary Responsibility |
+| Area | Direction |
 |---|---|
-| Frontend Agent | UI implementation, layouts, components, styling, and responsive design |
-| Backend Agent | APIs, business logic, database integration, and server-side architecture |
-| Debugging Agent | Error analysis, root-cause investigation, and fixes |
-| Research Agent | Documentation lookup, technical research, and solution comparison |
-| Testing Agent | Test generation, test execution, and failure analysis |
-| Planning Agent | Task decomposition, implementation strategy, and progress tracking |
+| **Agent workspace** | A unified place to prompt the agent, inspect progress, and follow task execution. |
+| **Model providers** | A modular provider layer for configured AI backends, with a mock option for development. |
+| **Task planning** | Break requests into steps and make execution progress easier to follow. |
+| **Project tools** | Work with files and workspace context through controlled tools. |
+| **Terminal workflows** | Run development commands and inspect output where supported and enabled. |
+| **Approvals** | Keep sensitive operations visible and subject to the applicable approval controls. |
+| **Browser and research tools** | Support documentation research and browser-assisted workflows as integrations mature. |
+| **Verification** | Use type checks, automated tests, builds, and browser tests to validate changes. |
 
-These roles are conceptual starting points. Their actual implementation and model assignments will depend on development progress and configuration.
+### Multi-model development
 
-### 📋 Task Planning & Progress Tracking
+PR-0 aims to keep provider integrations modular rather than tying the product to a single model. Depending on implemented adapters and local configuration, the intended direction includes providers such as OpenAI, Google Gemini, Anthropic Claude, and compatible local inference services such as Ollama.
 
-Complex development work should be organized rather than handled as one enormous prompt.
+Different models may be better suited to different tasks—for example, frontend design, backend reasoning, debugging, or research. Provider routing and specialized agent roles should be treated as configurable capabilities, not a guarantee that every role or provider is available in every build.
 
-PR-0 aims to support:
+### A workspace for real development tasks
 
-- Task decomposition.
-- Persistent TODO lists.
-- Task status tracking.
-- Dependencies between tasks.
-- Execution history.
-- Error reporting.
-- Progress summaries.
-- Recovery from interrupted workflows.
+The intended workflow connects conversation and task planning with project context and developer tools. Over time, the workspace is intended to make it easier to review proposed changes, understand tool activity, inspect command output, and see which checks have actually passed.
 
-The goal is to make longer-running agent tasks easier to understand, supervise, and resume.
+### UI/UX direction
 
-### 🔌 Extensible Provider Architecture
+The interface is being designed as a focused developer workspace rather than a collection of unrelated tools:
 
-The system is intended to support multiple AI backends through interchangeable provider adapters.
+- Group navigation into clear, task-oriented sections.
+- Keep the main agent conversation and composer central.
+- Make task progress and tool activity visible.
+- Give files, diffs, terminal output, and approvals clear places in the workflow.
+- Provide useful loading, empty, success, and error states.
+- Support keyboard navigation, accessible controls, and smaller screens.
 
-Potential integrations include:
+See [`UI-UX.md`](UI-UX.md) for the detailed interface specification. The specification describes the target experience; it should not be interpreted as proof that every screen or interaction has already been implemented.
 
-- OpenAI models.
-- Google Gemini models.
-- Anthropic Claude models.
-- Local models through compatible inference servers such as Ollama.
-
-Provider availability will depend on implementation status, API compatibility, account permissions, and configuration.
-
-Where supported, credentials should be provided through environment variables or a secure credential mechanism rather than hardcoded into source code.
-
-### 🧩 A Unified Development Interface
-
-The planned interface will bring the major parts of the workflow together:
-
-- Conversation and task management.
-- Model and provider selection.
-- Project and file exploration.
-- Tool execution visibility.
-- Terminal output.
-- TODO and task progress.
-- Execution logs and error reporting.
-
-The intended experience is a workspace where developers can supervise AI-assisted work without constantly jumping between unrelated applications.
-
----
-
-## 🏗️ Proposed Architecture
-
-PR-0 is intended to use a modular architecture that separates the user interface, orchestration logic, AI providers, and tools.
-
-```text
-┌─────────────────────────────────────────────┐
-│                PR-0 Workspace               │
-│                                             │
-│   Chat │ Files │ Terminal │ Tasks │ Logs    │
-└──────────────────────┬──────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────┐
-│             Application Backend             │
-│                                             │
-│   API Layer │ Sessions │ Configuration      │
-└──────────────────────┬──────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────┐
-│              Agent Orchestrator             │
-│                                             │
-│   Planning │ Routing │ Tool Selection       │
-│   Task State │ Execution │ Validation       │
-└─────────────┬───────────────────┬───────────┘
-              │                   │
-              ▼                   ▼
-┌──────────────────────┐  ┌───────────────────┐
-│   AI Provider Layer  │  │    Tool Layer     │
-│                      │  │                   │
-│   OpenAI             │  │   Filesystem      │
-│   Gemini              │  │   Terminal        │
-│   Claude              │  │   Browser         │
-│   Local Models        │  │   Web Research    │
-└──────────────────────┘  └───────────────────┘
-              │                   │
-              └─────────┬─────────┘
-                        ▼
-┌─────────────────────────────────────────────┐
-│          Persistence & Execution History    │
-│                                             │
-│       Sessions │ Tasks │ Logs │ Settings    │
-└─────────────────────────────────────────────┘
-```
-
-*This diagram describes the intended architecture, not a claim that every component is already implemented.*
-
-### Proposed Technology Stack
-
-| Component | Proposed Technology |
-|---|---|
-| Frontend | React, Vite, TypeScript |
-| Backend | Node.js, Fastify, TypeScript |
-| Data Persistence | SQLite with Drizzle ORM |
-| AI Integration | Provider-specific SDKs and API adapters |
-| Browser Automation | Playwright |
-| Local Model Support | Ollama-compatible endpoints |
-| Testing | Automated unit and integration tests |
-| Development Tools | Git, Node.js, npm |
-
-Technology choices may evolve as the project develops.
-
----
-
-## 🔄 How It Is Intended to Work
-
-Imagine asking PR-0:
-
-> Build a modern dashboard for my application, connect it to my backend API, fix any build errors, and run the tests.
-
-A planned workflow could look like this:
-
-**1. Analyze**
-
-The planning agent inspects the project structure, identifies the existing framework, and determines which files and components are relevant.
-
-**2. Plan**
-
-The task is divided into smaller steps, such as building the dashboard, integrating the API, and validating the implementation.
-
-**3. Delegate**
-
-The orchestrator selects suitable models or specialized agents for individual tasks.
-
-**4. Execute**
-
-Agents use permitted filesystem and terminal tools to implement the changes and run the necessary commands.
-
-**5. Validate**
-
-Builds and tests are executed. Errors are collected and analyzed, and the agent can attempt corrective changes within the configured limits.
-
-**6. Report**
-
-The user receives a summary of completed tasks, modified files, test results, and any remaining issues.
-
-This is an example of the intended workflow; actual behavior will depend on the features implemented and enabled.
-
----
-
-## 🔐 Security & Design Principles
-
-Giving an AI agent access to development tools creates responsibilities that ordinary chat applications do not have.
-
-PR-0 is intended to follow these principles:
-
-- **Least privilege:** Grant tools only the permissions they need.
-- **Explicit approvals:** Require confirmation for sensitive or destructive actions.
-- **Credential protection:** Never hardcode API keys, passwords, or session tokens.
-- **Command visibility:** Make terminal commands and their output inspectable.
-- **Filesystem boundaries:** Restrict file access to configured workspaces where practical.
-- **Prompt-injection resistance:** Treat external web content and repository files as untrusted input.
-- **Controlled browser access:** Respect authentication, permissions, and website security controls.
-- **Failure isolation:** Prevent a failed provider or tool from silently corrupting the overall workflow.
-- **Auditable execution:** Record relevant tool calls and outcomes without unnecessarily logging secrets.
-
-These are design goals. The security of the eventual implementation will depend on the controls actually implemented and tested.
-
----
-
-## 🚀 Getting Started
-
-PR-0 is an early local-development MVP. It includes a React/Vite operator UI, a Fastify API, SQLite persistence, task planning/execution, workspace tools, approval-gated writes and terminal sessions, and mock plus configurable provider adapters. See the architecture and security documents for implemented boundaries and known limitations.
+## 🚀 Quick Start
 
 ### Prerequisites
 
-The development environment requires:
+- **Node.js 22 or later**
+- **npm**
+- **Git** for Git-related workspace features
+- **Playwright Chromium** for browser automation and browser tests
+- Optional: credentials for a supported AI provider, or a compatible local model service
 
-- Node.js 22 or later and npm.
-- Git for the Git workspace features.
-- Playwright Chromium for browser automation and browser tests.
-- Optional provider credentials or a local Ollama service; the mock provider requires neither.
+The mock provider can be used for development flows that do not require a live model. Real provider use depends on adapter support, credentials, model availability, and configuration.
 
-### Clone the Repository
+### 1. Clone the repository
 
-From the repository root, install dependencies and start the application:
+```bash
+git clone https://github.com/Anshul-sys32/PR-0.git
+cd PR-0
+```
 
-### Install Dependencies
+### 2. Install dependencies
 
 ```bash
 npm install
+```
+
+Install the Playwright browser used by browser automation and browser tests:
+
+```bash
 npx playwright install chromium
+```
+
+### 3. Configure the environment
+
+Review the example environment file and the provider documentation before configuring credentials:
+
+```bash
+cp .env.example .env
+```
+
+Set only the values needed for your setup. Keep API keys, passwords, session secrets, and other credentials out of source control. Do not commit your `.env` file.
+
+### 4. Start the development environment
+
+```bash
 npm run dev
 ```
 
-The UI is served at `http://localhost:5173`; the API listens on `127.0.0.1:5000` by default. Configuration is read by the server from its process environment (or `.env` via dotenv). Provider credentials are optional and must never be committed. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), [docs/PROVIDERS.md](docs/PROVIDERS.md), and [docs/SECURITY.md](docs/SECURITY.md) for setup and operational details.
+The current repository configuration uses these default local endpoints:
 
----
+- **Web UI:** `http://localhost:5173`
+- **API server:** `http://127.0.0.1:5000`
 
-## 🗺️ Roadmap
+If your environment or configuration changes these ports, use the values printed by the development servers.
 
-The project will be developed incrementally.
+### Useful development commands
 
-### Phase 1 — Foundation
+Run these from the repository root:
 
-- [ ] Establish the repository structure.
-- [ ] Implement the initial frontend and backend.
-- [ ] Add application configuration and persistent storage.
-- [ ] Establish basic error handling and logging.
+```bash
+# Start the web app and API together
+npm run dev
 
-### Phase 2 — AI Integration
+# Type-check the workspaces
+npm run typecheck
 
-- [ ] Implement a common provider interface.
-- [ ] Integrate the first AI provider.
-- [ ] Add support for additional providers.
-- [ ] Implement model selection and routing.
+# Run unit/integration tests
+npm test
 
-### Phase 3 — Agent Orchestration
+# Run browser tests
+npm run test:browser
 
-- [ ] Implement planning and task decomposition.
-- [ ] Add task state management.
-- [ ] Implement tool selection and controlled execution.
-- [ ] Add execution limits and failure handling.
+# Build the workspaces
+npm run build
 
-### Phase 4 — Developer Tools
+# Initialize the server database
+npm run db:init
+```
 
-- [ ] Add filesystem operations.
-- [ ] Add controlled terminal sessions.
-- [ ] Implement project exploration.
-- [ ] Add TODO tracking and execution history.
+A command being available does not mean every test or integration has already been verified on every machine. Review the output and report failures rather than assuming a check passed.
 
-### Phase 5 — Browser & Research
+For additional setup details, consult the repository documentation:
 
-- [ ] Add web content retrieval.
-- [ ] Integrate browser automation.
-- [ ] Add documentation research workflows.
-- [ ] Introduce safeguards for untrusted web content.
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+- [`docs/PROVIDERS.md`](docs/PROVIDERS.md)
+- [`docs/SECURITY.md`](docs/SECURITY.md)
 
-### Phase 6 — Multi-Agent Workflows
+## 🏗️ Architecture
 
-- [ ] Implement specialized agent roles.
-- [ ] Add task delegation between agents.
-- [ ] Coordinate shared project changes.
-- [ ] Introduce validation and review workflows.
+PR-0 uses a workspace-based TypeScript codebase. At a high level, the system separates the web interface, API server, agent orchestration, model integrations, shared contracts, and tool execution.
 
-### Phase 7 — Reliability & Release
+```text
+┌───────────────────────────────────────────────┐
+│                 PR-0 Web UI                   │
+│       Workspace · Conversation · Activity     │
+└────────────────────────┬──────────────────────┘
+                         │
+                         ▼
+┌───────────────────────────────────────────────┐
+│                   API Server                  │
+│        HTTP API · Configuration · Storage     │
+└────────────────────────┬──────────────────────┘
+                         │
+                         ▼
+┌───────────────────────────────────────────────┐
+│               Agent Core / Planner            │
+│       Task state · Tool selection · Flow      │
+└───────────────┬─────────────────┬─────────────┘
+                │                 │
+                ▼                 ▼
+┌────────────────────────┐  ┌───────────────────┐
+│     Model Gateway      │  │   Tool Runtime    │
+│ Provider adapters      │  │ Files · Terminal  │
+│ Model configuration    │  │ Browser · Tools   │
+└────────────────────────┘  └───────────────────┘
+                │                 │
+                └────────┬────────┘
+                         ▼
+┌───────────────────────────────────────────────┐
+│        Shared Types · Persistence · Tests     │
+└───────────────────────────────────────────────┘
+```
 
-- [ ] Expand automated testing.
-- [ ] Improve error recovery.
-- [ ] Audit security-sensitive operations.
-- [ ] Document installation and configuration.
-- [ ] Prepare a stable release.
+This is a conceptual overview of the main boundaries, not a claim that every integration is complete or production-hardened.
 
-*Roadmap items are planned features and may change as development progresses.*
+### Repository layout
 
----
+```text
+apps/
+  server/          API server
+  web/             Web interface
+packages/
+  shared/          Shared types and contracts
+  model-gateway/   Model/provider integration layer
+  tool-runtime/    Tools and controlled execution
+  agent-core/      Agent planning and orchestration
+docs/              Development, provider, and security documentation
+prompts/            Agent prompts and instructions
+tests/              Automated tests
+UI-UX.md            Target UI/UX specification
+IMPLEMENTATION_PLAN.md
+                   Implementation status and planned work
+```
 
-## 🎯 Project Goals
+Names and responsibilities may evolve as the project changes; inspect the current source tree for the latest implementation.
 
-PR-0 is being designed around a few core ideas:
+## 🔐 Security and trust
 
-**Model independence** — Developers should not be locked into a single AI provider.
+An agent that can access project files or run commands needs stronger safeguards than a normal chat interface. PR-0's design priorities include:
 
-**Task-oriented intelligence** — AI should be able to plan and execute structured workflows, not just produce isolated responses.
+- **Least privilege:** provide tools only with the access they need.
+- **Visible execution:** make tool actions and command output inspectable.
+- **Approval for sensitive actions:** preserve confirmation and permission boundaries.
+- **Workspace boundaries:** constrain filesystem access where supported.
+- **Credential hygiene:** keep secrets out of source code, logs, and commits.
+- **Untrusted input handling:** treat repository files and external web content as data, not trusted instructions.
+- **Failure transparency:** report provider and tool errors rather than presenting failed work as successful.
 
-**Developer control** — Users should remain in control of permissions, sensitive actions, and important changes.
+These are design priorities, not a blanket security certification. Before using PR-0 on valuable data or sensitive repositories, review [`docs/SECURITY.md`](docs/SECURITY.md), understand which controls are implemented, and test the relevant boundaries. Do not expose the development server or enable unrestricted command execution on an untrusted network.
 
-**Modularity** — Models, tools, agents, and application components should be replaceable without redesigning the entire system.
+## 🧭 Development Status and Roadmap
 
-**Practical automation** — Focus on useful development work: understanding projects, editing files, running tests, researching solutions, and resolving problems.
+PR-0 is being developed incrementally. Use [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) as the source of truth for the current implementation checklist and known gaps.
 
-**Transparency** — Users should be able to inspect what the agent is doing and understand the results.
+### Current focus
 
----
+- Improve the clarity and usability of the main workspace.
+- Replace overloaded navigation with task-oriented sections.
+- Make loading, empty, error, and success states meaningful.
+- Improve visibility into task execution, tool activity, and results.
+- Keep the UI aligned with real backend behavior instead of adding decorative controls that do nothing.
+- Verify provider connectivity, terminal execution, approval handling, and browser workflows.
+- Expand automated coverage and keep documentation consistent with the code.
+
+### Longer-term direction
+
+- More robust provider configuration and model selection.
+- Reliable task planning, execution history, and recovery.
+- Clear file-change and diff review workflows.
+- Better browser-assisted research and development workflows.
+- Specialized agent roles and controlled delegation.
+- More comprehensive accessibility, security, and integration testing.
+
+Roadmap items are not release promises. Priorities may change as the codebase and test coverage evolve.
+
+## 🧪 Testing and verification
+
+The repository provides scripts for type checking, tests, builds, and browser tests. Run the checks relevant to your change before submitting it:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run test:browser
+```
+
+When reporting results, distinguish checks that passed from checks that were skipped, blocked by missing credentials, or not run. Mock-provider tests are useful for deterministic development, but they do not replace verifying a real provider or real host-level tool execution.
 
 ## 🤝 Contributing
 
-Contributions, suggestions, bug reports, and architectural discussions are welcome as the project becomes ready for collaboration.
+Issues, bug reports, UI/UX feedback, and focused pull requests are welcome as the project matures.
 
-Potential areas of contribution include:
+Helpful contributions include:
 
-- AI provider integrations.
-- Agent orchestration strategies.
-- Tool security and permission systems.
-- Frontend and developer experience.
-- Testing and reliability.
-- Documentation and examples.
+- Provider adapters and configuration improvements
+- Agent planning and execution reliability
+- Tool permissions and security boundaries
+- UI interactions, accessibility, and responsive behavior
+- Tests, bug reproductions, and developer documentation
 
-Before submitting a substantial contribution, consider opening an issue to discuss the proposed change.
+For substantial changes, first review the existing implementation plan and related documentation. Prefer small, testable changes that preserve existing API contracts and safety restrictions. Avoid introducing mock behavior that makes an unfinished integration appear functional.
 
-Contribution guidelines will be added as the project matures.
+## 📚 Project Documents
 
----
-
-## 🛣️ Future Vision
-
-The long-term ambition is to evolve PR-0 into a flexible AI workspace where developers can combine different models, tools, and specialized agents to accomplish complex tasks.
-
-Rather than building yet another interface that sends prompts to an AI model, the project explores a different question:
-
-**What if your AI assistant could coordinate the tools and models you already have, understand your project, and help carry a task from planning through implementation and verification?**
-
-That is the direction PR-0 aims to explore.
-
----
+| Document | Purpose |
+|---|---|
+| [`UI-UX.md`](UI-UX.md) | Target interface, interaction patterns, accessibility, and implementation phases |
+| [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) | Implementation checklist and progress |
+| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Local development setup |
+| [`docs/PROVIDERS.md`](docs/PROVIDERS.md) | Model provider configuration |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Security boundaries and operational guidance |
 
 ## 📜 License
 
-The project license has not yet been specified.
-
-A license should be selected and added to the repository before distributing the project for reuse. Until then, do not assume that the code is available for unrestricted redistribution or modification.
+Check the repository for a `LICENSE` file and its terms before redistributing or reusing this project. Do not assume a license that is not explicitly included.
 
 ---
 
@@ -429,6 +305,6 @@ A license should be selected and added to the repository before distributing the
 
 **One goal. Multiple models. A smarter way to build.**
 
-*Currently under development.*
+*An open-ended project in active development.*
 
 </div>
