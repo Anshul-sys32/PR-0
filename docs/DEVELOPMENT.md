@@ -1,9 +1,14 @@
 # Development
 
-Requires Node.js 22 or later because the local database adapter uses `node:sqlite`.
+Requires Node.js 22 or later because the local database adapter uses `node:sqlite`, plus npm. Browser tests use Playwright-managed Chromium.
 
-Browser automation uses Playwright-managed Chromium. After installing npm dependencies, install the browser runtime with `npx playwright install chromium`.
+Install dependencies and the browser runtime:
 
-Use `npm run dev` for the API and frontend together. Use `npm run db:init` to create the local database. `npm test`, `npm run typecheck`, and `npm run build` are the project verification commands.
+```sh
+npm install
+npx playwright install chromium
+```
 
-The test suite uses isolated temporary database files and the mock model. It does not make paid provider calls.
+Run `npm run dev` for the API and frontend together. The API defaults to `127.0.0.1:5000`, the web app to Vite's `localhost:5173`, and SQLite data to `data/pr-0.db`. Use `npm run db:init` to initialize the configured database. See [PROVIDERS.md](PROVIDERS.md) for server-side provider configuration. Cloud credentials are optional; the mock adapter is the default and is used by tests.
+
+The verification commands are `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:browser`. Tests use isolated temporary databases and deterministic/mock adapters; they do not make paid provider calls. Browser tests launch local test servers and Chromium.

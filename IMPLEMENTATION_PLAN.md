@@ -1,6 +1,6 @@
 # Project PR-0 implementation plan
 
-## Current milestone: Phase 5 dependency-aware execution
+## Current milestone: Release readiness and verification
 
 - [x] Inspect empty repository and runtime.
 - [x] Establish npm workspaces and strict TypeScript configuration.
@@ -41,13 +41,19 @@
 
 ## Verification recorded in this resume
 
-- `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web workspaces.
-- `npm test`: passed, 7 test files and 67 tests after Git patch/history/checkpoint support and project-wide dependency relationships.
+- `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web workspaces on this resume.
+- `npm test`: passed, 7 test files and 70 tests on this resume.
 - `npx vitest run tests/integration/api.test.ts`: passed, 17 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, SSE progress, browser/research URL rejection, Git patch/history, and checkpoint rollback safeguards.
 - `npx vitest run tests/unit/web-research.test.ts`: passed URL, IP-range, DNS-mixing, and address-pinning policy cases without outbound network calls.
 - `npx vitest run tests/unit/browser-automation.test.ts`: passed 2 Chromium-backed tests using a mocked fetcher to verify navigation, local text-field interaction, screenshot capture, and blocked subresources.
-- `npm run build`: passed across all packages; Vite reports a non-blocking recommendation to switch React plugins for Rolldown performance.
+- `npm run build`: passed across all packages on this resume; Vite reports a non-blocking recommendation to switch React plugins for Rolldown performance.
 - `git diff --check`: passed.
+- `npx vitest run tests/integration/api.test.ts`: passed, 19 tests after adding the model-requested write approval lifecycle, sensitive-path rejection, cancellation, and restart invalidation cases.
+- `npx vitest run tests/unit/contracts.test.ts`: passed, 7 tests including common credential assignment, private-key, AWS key, and GitHub token patterns.
+- `npm run test:browser`: passed, 2 Chromium workflows on this resume, covering memory add/edit/delete and secret feedback, plus approval preview/approve/reject.
+- `git diff --check`: passed on this resume.
+- `npx vitest run tests/integration/api.test.ts`: passed, 19 tests on this resume; the focused model-write lifecycle test also passed with capped preview and credential-content rejection assertions.
+- `get_errors` reported no diagnostics in the touched server and API integration test files.
 - The Git status and numstat integration test passed against a disposable repository initialized during the test.
 - The strict web side-effect import check (`npx tsc --noEmit -p apps/web/tsconfig.json --noUncheckedSideEffectImports`) passed.
 - Browser smoke check confirmed the UI connects to the API, rejects loopback URLs, and inspects `https://example.org/` through the pinned fetcher; no project was created in the development database.
@@ -59,8 +65,13 @@
 - [x] Complete Phase 6 real-time plan updates with SSE and improve task-plan visualization with an ordered dependency flow and named prerequisites.
 - [x] Implement browser automation and public web research with strict network controls: user-submitted HTTPS pages use public-IP DNS pinning, redirect rejection, bounded text retrieval, and an isolated Playwright context with JavaScript/subresources disabled, GET-only validated navigation, and restricted selector actions.
 - [x] Complete Git integration with sensitive-path-filtered patch viewing, bounded commit history, clean-worktree checkpoint tags, preview-bound rollback with explicit confirmation and a backup tag, plus project-wide prerequisite/dependent task relationships.
-- [ ] Harden project memory retrieval, improve secret detection, and cover memory UI workflows with browser tests.
-- [ ] Complete hardening, security coverage, browser tests, and release documentation.
+- [x] Harden project memory retrieval with exact normalized token matching and legacy-secret filtering; centralize credential-like value detection and cover memory add/edit/delete/rejection in Playwright browser tests.
+- [x] Complete hardening, security coverage, browser tests, and release documentation: serialize cancellation against approved agent writes, test credential rejection and bounded previews, document the local-only security boundary, and add release readiness checks.
+
+## In-progress MVP capability
+
+- [x] Expose model-requested `filesystem.write` as a supervised tool that atomically queues a persisted approval, pauses execution in `waiting_for_approval`, shows a bounded proposed-content preview, writes only after approval, resumes the model for verification, and leaves files unchanged on rejection/cancellation. Sensitive paths and credential-like write content are blocked. Restart recovery fails the interrupted task and invalidates its pending agent-write approval.
+- [x] Finish full regression verification for the write-loop and memory changes. API integration tests cover model-proposed write pause/approve/reject/cancel/restart, credential rejection, bounded previews, and concurrent approval/cancellation outcomes. Browser UI tests cover preview/approve/reject on the supervised-write API.
 
 ## Architectural decisions
 
@@ -75,5 +86,8 @@
 - OpenAI API requests remain unverified unless the operator configures a valid key and model; no request is issued automatically.
 - Anthropic and Gemini real API calls and Ollama local service calls remain unverified until configured by the operator.
 - Browser and research access remain user-initiated and constrained to validated public HTTPS navigation; page scripts, subresources, forms, downloads, popups, and model-invoked web access are disabled.
+- Model-requested writes pause the current in-memory agent loop. If the server restarts while awaiting approval, recovery marks the task failed and invalidates the approval rather than resuming the model conversation; the user can create a new task after restart.
+- Once an agent-write approval is claimed for execution, cancellation returns HTTP 409 until the write completes. If cancellation wins before approval is claimed, the pending operation is rejected and no file is written.
+- The API does not authenticate callers and must remain bound to loopback; CORS is not an authorization boundary. See `docs/RELEASE.md` before preparing a candidate.
 - A compiled-server bind smoke test is blocked by the execution sandbox (`EPERM` when binding loopback), not by an application startup error. SQLite itself was smoke-tested successfully in Node 22.
 - The execution sandbox also rejects child-process spawning with `EPERM`. Terminal session persistence and approval workflows are integration-tested, but successful subprocess output must be verified on a normal local host.

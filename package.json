@@ -13,6 +13,7 @@
     "typecheck": "npm run typecheck -w @pr-0/shared && npm run typecheck -w @pr-0/model-gateway && npm run typecheck -w @pr-0/tool-runtime && npm run typecheck -w @pr-0/agent-core && npm run typecheck -w @pr-0/server && npm run typecheck -w @pr-0/web",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "playwright test",
     "db:init": "npm run db:init -w @pr-0/server"
   },
   "devDependencies": {

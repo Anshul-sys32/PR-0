@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +43,25 @@ class RetryingTestAdapter implements ModelAdapter {
     this.attempts++;
     if (this.attempts < 3) throw new Error("Provider HTTP 503: temporarily unavailable");
     return { content: "Recovered after transient failures", toolCalls: [], finishReason: "stop", usage: {} };
+  }
+}
+
+class WriteProposalAdapter implements ModelAdapter {
+  readonly providerId = "ollama";
+  readonly requests: ModelRequest[] = [];
+  private readonly proposals: Array<{ path: string; content: string; overwrite?: boolean }>;
+  private currentProposal: { path: string; content: string; overwrite?: boolean } | undefined;
+  constructor(proposals: Array<{ path: string; content: string; overwrite?: boolean }>) { this.proposals = [...proposals]; }
+  getCapabilities() { return { streaming: false, toolCalling: true, structuredOutput: false, vision: false, supportsCancellation: true }; }
+  async generate(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(request);
+    const last = request.messages.at(-1);
+    if (last?.role === "user") {
+      this.currentProposal = this.proposals.shift();
+      if (!this.currentProposal) throw new Error("No write proposal configured");
+      return { content: "I propose this file change.", toolCalls: [{ id: `write-${this.requests.length}`, name: "filesystem.write", input: this.currentProposal }], finishReason: "tool_calls", usage: {} };
+    }
+    return { content: `Verified tool response: ${last?.content ?? "empty"}`, toolCalls: [], finishReason: "stop", usage: {} };
   }
 }
 
@@ -172,6 +191,22 @@ describe("local workflow", () => {
     expect((await app.inject(`/api/projects/${project.id}/memory`)).json().memories).toContainEqual(expect.objectContaining({ id: memoryId, content: "SQLite remains the local persistence layer." }));
     expect((await app.inject({ method: "DELETE", url: `/api/projects/${project.id}/memory/${memoryId}` })).statusCode).toBe(200);
     expect((await app.inject(`/api/projects/${project.id}/memory`)).json().memories).toHaveLength(0);
+    for (const content of ["password: hunter2", "AKIAIOSFODNN7EXAMPLE", "ghp_abcdefghijklmnopqrstuvwxyz012345", "-----BEGIN OPENSSH PRIVATE KEY-----"]) {
+      expect((await app.inject({ method: "POST", url: `/api/projects/${project.id}/memory`, payload: { kind: "fact", content } })).statusCode).toBe(400);
+    }
+  });
+
+  it("ranks memory by exact token overlap and filters legacy credential-like notes", () => {
+    const memoryDatabase = new DatabaseService(`file:${join(directory, "memory-retrieval.db")}`);
+    try {
+      const project = memoryDatabase.createProject("memory-ranking", directory);
+      memoryDatabase.createProjectMemory(project.id, "fact", "The task API uses SQLite storage.");
+      memoryDatabase.createProjectMemory(project.id, "fact", "Tasking endpoints are documented separately.");
+      memoryDatabase.createProjectMemory(project.id, "decision", "API_KEY=legacy-secret-value stored in an old note.");
+      const results = memoryDatabase.findRelevantProjectMemory(project.id, "task API");
+      expect(results.map((note) => note.content)).toEqual(["The task API uses SQLite storage."]);
+      expect(memoryDatabase.findRelevantProjectMemory(project.id, "task API", 100)).toHaveLength(1);
+    } finally { memoryDatabase.close(); }
   });
 
   it("keeps manual TODOs separate from execution task state", async () => {
@@ -194,12 +229,19 @@ describe("local workflow", () => {
     const initialDatabase = new DatabaseService(databaseUrl);
     const project = initialDatabase.createProject("recovery-test", directory);
     const task = initialDatabase.createTask({ projectId: project.id, title: "Interrupted task", description: "Must report interruption", role: "backend", dependencies: [], acceptanceCriteria: [], status: "running", priority: 0 });
+    const waitingTask = initialDatabase.createTask({ projectId: project.id, title: "Interrupted approval", description: "Approval cannot survive restart", role: "backend", dependencies: [], acceptanceCriteria: [], status: "waiting_for_approval", priority: 0 });
+    const staleApproval = initialDatabase.createFilesystemApproval(waitingTask.id, "Agent requests write recovery.txt", JSON.stringify({ source: "agent-tool", request: { taskId: waitingTask.id, projectId: project.id, path: "recovery.txt", content: "stale", overwrite: false, mode: "ask-first" } }));
     const session = initialDatabase.createTerminalSession({ projectId: project.id, taskId: task.id, workingDirectory: directory, executable: "node", args: ["long-running"] });
     initialDatabase.close();
     const recoveryApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: databaseUrl, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 3, MAX_TOOL_STEPS_PER_TASK: 40, MAX_RETRIES_PER_TASK: 3 });
     try {
       const tasks = (await recoveryApp.inject(`/api/projects/${project.id}/tasks`)).json().tasks;
       expect(tasks.find((value: { id: string }) => value.id === task.id)).toMatchObject({ status: "failed", execution: { result: { status: "failed", summary: "Task was interrupted when the server stopped." } } });
+      expect(tasks.find((value: { id: string }) => value.id === waitingTask.id).status).toBe("failed");
+      expect((await recoveryApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals).toHaveLength(0);
+      const staleDecision = await recoveryApp.inject({ method: "POST", url: `/api/approvals/${staleApproval.id}/decision`, payload: { approved: true } });
+      expect(staleDecision.statusCode).toBe(409);
+      expect(existsSync(join(directory, "recovery.txt"))).toBe(false);
       const recoveredSession = (await recoveryApp.inject(`/api/terminal-sessions/${session.id}`)).json().session;
       expect(recoveredSession.status).toBe("failed");
       expect(recoveredSession.output).toContain("Session was interrupted");
@@ -335,6 +377,106 @@ describe("local workflow", () => {
     const reopenedDatabase = new DatabaseService(databaseUrl);
     try { expect(reopenedDatabase.getTaskRetryAttempts(taskId)).toBe(2); expect(reopenedDatabase.getTaskExecution(taskId)?.retryAttempts).toBe(2); }
     finally { reopenedDatabase.close(); }
+  });
+
+  it("pauses model-proposed writes for review and resumes only after approval", async () => {
+    const adapter = new WriteProposalAdapter([
+      { path: "agent-created.ts", content: "export const answer = 42;\n" },
+      { path: "agent-rejected.ts", content: "x".repeat(20_050) },
+      { path: ".env.agent", content: "API_KEY=not-allowed" },
+      { path: "unsafe-secret.txt", content: "API_KEY=not-allowed-value" },
+      { path: "agent-race.ts", content: "approved during cancellation race\n" },
+      { path: "agent-cancelled.ts", content: "must not be written after cancellation\n" }
+    ]);
+    const writeApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "agent-write.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 2, MAX_TOOL_STEPS_PER_TASK: 40, MAX_RETRIES_PER_TASK: 1 }, undefined, [adapter]);
+    try {
+      const project = (await writeApp.inject({ method: "POST", url: "/api/projects", payload: { name: "agent-write", rootPath: directory } })).json().project;
+      const conversation = (await writeApp.inject({ method: "POST", url: "/api/conversations", payload: { projectId: project.id } })).json().conversation;
+      const task = (await writeApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Create a small source file" } })).json().task;
+      const running = writeApp.inject({ method: "POST", url: `/api/tasks/${task.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      let pending: Array<{ id: string; preview?: { path: string; content: string; contentTruncated?: boolean; overwrite: boolean } }> = [];
+      for (let attempt = 0; attempt < 100 && !pending.length; attempt++) {
+        await delay(10);
+        pending = (await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals;
+      }
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({ preview: { path: "agent-created.ts", content: "export const answer = 42;\n", overwrite: false } });
+      expect(existsSync(join(directory, "agent-created.ts"))).toBe(false);
+      const waitingTask = (await writeApp.inject(`/api/projects/${project.id}/tasks`)).json().tasks.find((value: { id: string }) => value.id === task.id);
+      expect(waitingTask.status).toBe("waiting_for_approval");
+      const approved = await writeApp.inject({ method: "POST", url: `/api/approvals/${pending[0]?.id}/decision`, payload: { approved: true } });
+      expect(approved.statusCode).toBe(200);
+      expect(readFileSync(join(directory, "agent-created.ts"), "utf8")).toBe("export const answer = 42;\n");
+      const result = await running;
+      expect(result.statusCode).toBe(200);
+      expect(result.json().result.summary).toContain("Verified tool response");
+      expect(adapter.requests).toHaveLength(2);
+      expect(adapter.requests[1]?.messages.at(-1)?.content).toContain("bytesWritten");
+
+      const rejectedTask = (await writeApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Propose another source file" } })).json().task;
+      const rejectedRun = writeApp.inject({ method: "POST", url: `/api/tasks/${rejectedTask.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      pending = [];
+      for (let attempt = 0; attempt < 100 && !pending.length; attempt++) {
+        await delay(10);
+        pending = (await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals;
+      }
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.preview).toMatchObject({ content: "x".repeat(20_000), contentTruncated: true });
+      expect(existsSync(join(directory, "agent-rejected.ts"))).toBe(false);
+      expect((await writeApp.inject({ method: "POST", url: `/api/approvals/${pending[0]?.id}/decision`, payload: { approved: false } })).statusCode).toBe(200);
+      expect((await rejectedRun).statusCode).toBe(200);
+      expect(existsSync(join(directory, "agent-rejected.ts"))).toBe(false);
+
+      const unsafeTask = (await writeApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Propose writing a credential file" } })).json().task;
+      const unsafeRun = await writeApp.inject({ method: "POST", url: `/api/tasks/${unsafeTask.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      expect(unsafeRun.statusCode).toBe(200);
+      expect(unsafeRun.json().result.summary).toContain("credential or sensitive files are blocked");
+      expect((await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals).toHaveLength(0);
+      expect(existsSync(join(directory, ".env.agent"))).toBe(false);
+
+      const secretContentTask = (await writeApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Propose content containing a credential" } })).json().task;
+      const secretContentRun = await writeApp.inject({ method: "POST", url: `/api/tasks/${secretContentTask.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      expect(secretContentRun.statusCode).toBe(200);
+      expect(secretContentRun.json().result.summary).toContain("credential-like value");
+      expect((await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals).toHaveLength(0);
+      expect(existsSync(join(directory, "unsafe-secret.txt"))).toBe(false);
+
+      const raceTask = (await writeApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Propose a write while cancellation races" } })).json().task;
+      const raceRun = writeApp.inject({ method: "POST", url: `/api/tasks/${raceTask.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      pending = [];
+      for (let attempt = 0; attempt < 100 && !pending.length; attempt++) {
+        await delay(10);
+        pending = (await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals;
+      }
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.preview?.content).toBe("approved during cancellation race\n");
+      const [raceApproval, racedCancellation] = await Promise.all([
+        writeApp.inject({ method: "POST", url: `/api/approvals/${pending[0]?.id}/decision`, payload: { approved: true } }),
+        writeApp.inject({ method: "POST", url: `/api/tasks/${raceTask.id}/cancel` })
+      ]);
+      expect([200, 409]).toContain(racedCancellation.statusCode);
+      if (raceApproval.statusCode === 200) {
+        expect(readFileSync(join(directory, "agent-race.ts"), "utf8")).toBe("approved during cancellation race\n");
+      } else {
+        expect(raceApproval.statusCode).toBe(409);
+        expect(existsSync(join(directory, "agent-race.ts"))).toBe(false);
+      }
+      const raceResult = (await raceRun).json();
+      expect(raceResult.cancelled || raceResult.result?.status === "completed").toBe(true);
+
+      const cancelledTask = (await writeApp.inject({ method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: { content: "Propose a file then cancel" } })).json().task;
+      const cancelledRun = writeApp.inject({ method: "POST", url: `/api/tasks/${cancelledTask.id}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      pending = [];
+      for (let attempt = 0; attempt < 100 && !pending.length; attempt++) {
+        await delay(10);
+        pending = (await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals;
+      }
+      expect(pending).toHaveLength(1);
+      expect((await writeApp.inject({ method: "POST", url: `/api/tasks/${cancelledTask.id}/cancel` })).statusCode).toBe(200);
+      expect((await cancelledRun).json()).toMatchObject({ cancelled: true, taskId: cancelledTask.id });
+      expect((await writeApp.inject(`/api/projects/${project.id}/approvals`)).json().approvals).toHaveLength(0);
+      expect(existsSync(join(directory, "agent-cancelled.ts"))).toBe(false);
+    } finally { await writeApp.close(); }
   });
 
   it("rejects malformed or cyclic model plans before persisting task rows", async () => {

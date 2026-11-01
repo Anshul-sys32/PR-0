@@ -32,5 +32,12 @@ export function isSensitiveFilePath(path: string): boolean {
     || name === ".env" || name.startsWith(".env.") || name.endsWith(".pem") || name.endsWith(".key")
     || name === "id_rsa" || name === "id_ed25519" || name.includes("credentials") || name.includes("secrets");
 }
+export function containsCredentialLikeValue(content: string): boolean {
+  return /(?:api[_-]?key|password|passwd|token|secret|private[_-]?key)\s*[:=]\s*[^\s"']{4,}/i.test(content)
+    || /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(content)
+    || /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/.test(content)
+    || /\bgh[pousr]_[A-Za-z0-9]{30,}\b/.test(content)
+    || /\bsk-[A-Za-z0-9_-]{20,}\b/.test(content);
+}
 export type Risk = "low" | "consequential" | "destructive";
 export function requiresApproval(mode: "ask-first" | "supervised" | "autonomous", risk: Risk): boolean { return risk === "destructive" || (mode === "ask-first" && risk !== "low") || (mode === "supervised" && risk === "consequential"); }

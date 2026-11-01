@@ -281,64 +281,30 @@ These are design goals. The security of the eventual implementation will depend 
 
 ## 🚀 Getting Started
 
-PR-0 is under development. Installation and execution instructions will be finalized as the initial implementation becomes available.
+PR-0 is an early local-development MVP. It includes a React/Vite operator UI, a Fastify API, SQLite persistence, task planning/execution, workspace tools, approval-gated writes and terminal sessions, and mock plus configurable provider adapters. See the architecture and security documents for implemented boundaries and known limitations.
 
 ### Prerequisites
 
-The proposed development environment includes:
+The development environment requires:
 
-- Node.js with npm.
-- Git.
-- An AI provider API key for the providers you intend to use.
-- A supported operating system.
-- Optional local inference software if local models are implemented and enabled.
+- Node.js 22 or later and npm.
+- Git for the Git workspace features.
+- Playwright Chromium for browser automation and browser tests.
+- Optional provider credentials or a local Ollama service; the mock provider requires neither.
 
 ### Clone the Repository
 
-Replace the placeholders below with your actual GitHub repository details.
-
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd <YOUR_REPOSITORY_DIRECTORY>
-```
+From the repository root, install dependencies and start the application:
 
 ### Install Dependencies
 
-Once the project structure and package scripts have been established, install the dependencies using the package manager specified by the repository.
-
-For an npm-based project:
-
 ```bash
 npm install
+npx playwright install chromium
+npm run dev
 ```
 
-### Configure Environment Variables
-
-Create a local environment file based on the project's environment template, when available.
-
-For example, the configuration may eventually include:
-
-```env
-# Application
-NODE_ENV=development
-PORT=3000
-
-# AI provider credentials
-OPENAI_API_KEY=
-GEMINI_API_KEY=
-ANTHROPIC_API_KEY=
-
-# Optional local inference endpoint
-OLLAMA_BASE_URL=http://localhost:11434
-```
-
-**Important:** These are illustrative configuration variables, not a guarantee that the current implementation reads them. Use the actual environment template provided by the project.
-
-Never commit real API keys or other secrets to GitHub.
-
-### Run the Application
-
-Development commands will be documented here once the application scripts have been implemented.
+The UI is served at `http://localhost:5173`; the API listens on `127.0.0.1:5000` by default. Configuration is read by the server from its process environment (or `.env` via dotenv). Provider credentials are optional and must never be committed. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), [docs/PROVIDERS.md](docs/PROVIDERS.md), and [docs/SECURITY.md](docs/SECURITY.md) for setup and operational details.
 
 ---
 

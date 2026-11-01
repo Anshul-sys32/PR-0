@@ -3,13 +3,15 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { agentResultSchema, taskPlanSchema, type AgentResult, type AgentTask, type ProjectMemoryKind, type TaskPlan, type TaskState } from "@pr-0/shared";
+import { containsCredentialLikeValue } from "@pr-0/tool-runtime";
 
 export interface Project { id: string; name: string; rootPath: string; createdAt: string }
 export interface Conversation { id: string; projectId: string; createdAt: string }
 export interface Message { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string }
 export interface Approval { id: string; taskId: string; action: string; risk: string; status: "pending" | "approved" | "rejected"; createdAt: string }
-export interface ApprovalSummary extends Approval { operationKind: PendingOperation["kind"] | null }
-export interface PendingOperation { id: string; approvalId: string; kind: "filesystem.write" | "terminal.run"; payload: string; status: "pending" | "executed" | "rejected" | "failed"; createdAt: string }
+export interface ApprovalPreview { path: string; content: string; contentTruncated: boolean; overwrite: boolean }
+export interface ApprovalSummary extends Approval { operationKind: PendingOperation["kind"] | null; preview?: ApprovalPreview }
+export interface PendingOperation { id: string; approvalId: string; kind: "filesystem.write" | "terminal.run"; payload: string; status: "pending" | "executing" | "executed" | "rejected" | "failed"; createdAt: string }
 export interface TerminalSession { id: string; projectId: string; taskId: string; workingDirectory: string; executable: string; args: string[]; status: "running" | "exited" | "failed" | "stopped"; output: string; exitCode: number | null; createdAt: string; updatedAt: string }
 export interface TaskExecutionRecord { taskId: string; provider: string; model: string; result: AgentResult; retryAttempts: number; createdAt: string }
 export interface ProjectMemory { id: string; projectId: string; kind: ProjectMemoryKind; content: string; createdAt: string; updatedAt: string }
@@ -50,6 +52,7 @@ export class DatabaseService {
       saveResult.run(task.id, "system", "unknown", JSON.stringify(result), now);
       this.audit("task.interrupted", JSON.stringify({ taskId: task.id, projectId: task.projectId }));
     }
+    this.rejectAgentWriteApprovalsForTasks(interrupted.map((task) => task.id));
     const terminalSessions = this.db.prepare("SELECT id FROM terminal_sessions WHERE status = 'running'").all() as Array<{ id: string }>;
     const markSessionStopped = this.db.prepare("UPDATE terminal_sessions SET status = 'failed', updated_at = ? WHERE id = ?");
     for (const session of terminalSessions) {
@@ -157,13 +160,18 @@ export class DatabaseService {
   }
   deleteProjectMemory(projectId: string, id: string): boolean { return this.db.prepare("DELETE FROM project_memory WHERE project_id = ? AND id = ?").run(projectId, id).changes > 0; }
   findRelevantProjectMemory(projectId: string, query: string, limit = 3): ProjectMemory[] {
-    const terms = new Set((query.toLocaleLowerCase().match(/[a-z0-9_]{3,}/g) ?? []).filter((term) => !["the", "and", "for", "with", "from", "this", "that", "are", "you"].includes(term)));
+    const stopWords = new Set(["the", "and", "for", "with", "from", "this", "that", "are", "you", "was", "were", "what", "when", "where", "which", "how", "why", "should", "could", "would", "about", "into", "onto", "then", "than", "have", "has", "had"]);
+    const tokenize = (value: string) => new Set((value.normalize("NFKC").toLocaleLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? []).filter((term) => !stopWords.has(term)));
+    const terms = tokenize(query);
     if (!terms.size) return [];
-    return this.listProjectMemory(projectId).map((memory) => {
-      const text = `${memory.kind} ${memory.content}`.toLocaleLowerCase();
-      const score = [...terms].reduce((count, term) => count + (text.includes(term) ? 1 : 0), 0);
-      return { memory, score };
-    }).filter((item) => item.score > 0).sort((left, right) => right.score - left.score || right.memory.updatedAt.localeCompare(left.memory.updatedAt)).slice(0, limit).map((item) => item.memory);
+    const safeLimit = Math.min(Math.max(Math.floor(limit), 1), 10);
+    return this.listProjectMemory(projectId).filter((memory) => !containsCredentialLikeValue(memory.content)).map((memory) => {
+      const memoryTerms = tokenize(`${memory.kind} ${memory.content}`);
+      const overlap = [...terms].filter((term) => memoryTerms.has(term)).length;
+      const phraseMatch = [...terms].length > 1 && memory.content.normalize("NFKC").toLocaleLowerCase().includes(query.normalize("NFKC").toLocaleLowerCase());
+      const score = overlap + (phraseMatch ? 0.5 : 0);
+      return { memory, score, coverage: overlap / terms.size };
+    }).filter((item) => item.score > 0).sort((left, right) => right.score - left.score || right.coverage - left.coverage || right.memory.updatedAt.localeCompare(left.memory.updatedAt)).slice(0, safeLimit).map((item) => item.memory);
   }
   addUsage(taskId: string, usage: { provider?: string; model?: string; inputTokens?: number; outputTokens?: number; estimatedCostUsd?: number }): void { this.db.prepare("INSERT INTO usage_records VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), taskId, usage.provider ?? "unknown", usage.model ?? "unknown", usage.inputTokens ?? null, usage.outputTokens ?? null, usage.estimatedCostUsd ?? null, this.now()); }
   getProjectUsage(projectId: string): ProjectUsageSummary {
@@ -186,13 +194,61 @@ export class DatabaseService {
   createApproval(taskId: string, action: string, risk: string): Approval { const approval: Approval = { id: randomUUID(), taskId, action, risk, status: "pending", createdAt: this.now() }; this.db.prepare("INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?)").run(approval.id, approval.taskId, approval.action, approval.risk, approval.status, approval.createdAt); return approval; }
   getApproval(id: string): Approval | undefined { return this.db.prepare("SELECT id, task_id AS taskId, action, risk, status, created_at AS createdAt FROM approvals WHERE id = ?").get(id) as unknown as Approval | undefined; }
   listPendingApprovals(projectId: string): ApprovalSummary[] {
-    return this.db.prepare("SELECT a.id, a.task_id AS taskId, a.action, a.risk, a.status, a.created_at AS createdAt, p.kind AS operationKind FROM approvals a JOIN tasks t ON t.id = a.task_id LEFT JOIN pending_operations p ON p.approval_id = a.id WHERE t.project_id = ? AND a.status = 'pending' ORDER BY a.created_at ASC")
-      .all(projectId) as unknown as ApprovalSummary[];
+    const rows = this.db.prepare("SELECT a.id, a.task_id AS taskId, a.action, a.risk, a.status, a.created_at AS createdAt, p.kind AS operationKind, p.payload AS payload FROM approvals a JOIN tasks t ON t.id = a.task_id LEFT JOIN pending_operations p ON p.approval_id = a.id WHERE t.project_id = ? AND a.status = 'pending' ORDER BY a.created_at ASC")
+      .all(projectId) as Array<Record<string, unknown>>;
+    return rows.map((row) => {
+      const approval: ApprovalSummary = {
+        id: String(row.id), taskId: String(row.taskId), action: String(row.action), risk: String(row.risk),
+        status: row.status as Approval["status"], createdAt: String(row.createdAt),
+        operationKind: row.operationKind as ApprovalSummary["operationKind"]
+      };
+      if (row.operationKind === "filesystem.write" && typeof row.payload === "string") {
+        try {
+          const parsed = JSON.parse(row.payload) as { source?: string; request?: { path?: string; content?: string; overwrite?: boolean } };
+          if (parsed.source === "agent-tool" && parsed.request) {
+            const content = parsed.request.content ?? "";
+            approval.preview = { path: parsed.request.path ?? "", content: content.slice(0, 20_000), contentTruncated: content.length > 20_000, overwrite: parsed.request.overwrite ?? false };
+          }
+        } catch { }
+      }
+      return approval;
+    });
   }
-  decideApproval(id: string, approved: boolean): void { this.db.prepare("UPDATE approvals SET status = ? WHERE id = ?").run(approved ? "approved" : "rejected", id); }
+  decideApproval(id: string, approved: boolean): boolean { return this.db.prepare("UPDATE approvals SET status = ? WHERE id = ? AND status = 'pending'").run(approved ? "approved" : "rejected", id).changes === 1; }
+  createFilesystemApproval(taskId: string, action: string, payload: string): Approval {
+    const approval: Approval = { id: randomUUID(), taskId, action, risk: "consequential", status: "pending", createdAt: this.now() };
+    const operation: PendingOperation = { id: randomUUID(), approvalId: approval.id, kind: "filesystem.write", payload, status: "pending", createdAt: approval.createdAt };
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?)").run(approval.id, approval.taskId, approval.action, approval.risk, approval.status, approval.createdAt);
+      this.db.prepare("INSERT INTO pending_operations VALUES (?, ?, ?, ?, ?, ?)").run(operation.id, operation.approvalId, operation.kind, operation.payload, operation.status, operation.createdAt);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return approval;
+  }
   createPendingOperation(approvalId: string, kind: PendingOperation["kind"], payload: string): PendingOperation { const operation = { id: randomUUID(), approvalId, kind, payload, status: "pending" as const, createdAt: this.now() }; this.db.prepare("INSERT INTO pending_operations VALUES (?, ?, ?, ?, ?, ?)").run(operation.id, operation.approvalId, operation.kind, operation.payload, operation.status, operation.createdAt); return operation; }
   getPendingOperationByApproval(approvalId: string): PendingOperation | undefined { return this.db.prepare("SELECT id, approval_id AS approvalId, kind, payload, status, created_at AS createdAt FROM pending_operations WHERE approval_id = ?").get(approvalId) as unknown as PendingOperation | undefined; }
+  claimPendingOperation(id: string): boolean { return this.db.prepare("UPDATE pending_operations SET status = 'executing' WHERE id = ? AND status = 'pending'").run(id).changes === 1; }
   updatePendingOperation(id: string, status: PendingOperation["status"]): void { this.db.prepare("UPDATE pending_operations SET status = ? WHERE id = ?").run(status, id); }
+  rejectAgentWriteApprovalsForTasks(taskIds: string[]): string[] {
+    if (!taskIds.length) return [];
+    const placeholders = taskIds.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT p.id, p.approval_id AS approvalId, p.payload FROM pending_operations p JOIN approvals a ON a.id = p.approval_id WHERE a.task_id IN (${placeholders}) AND p.kind = 'filesystem.write' AND p.status = 'pending' AND a.status = 'pending'`).all(...taskIds) as Array<{ id: string; approvalId: string; payload: string }>;
+    const rejected: string[] = [];
+    for (const row of rows) {
+      try {
+        const payload = JSON.parse(row.payload) as { source?: string };
+        if (payload.source !== "agent-tool") continue;
+        this.db.prepare("UPDATE pending_operations SET status = 'rejected' WHERE id = ? AND status = 'pending'").run(row.id);
+        this.db.prepare("UPDATE approvals SET status = 'rejected' WHERE id = ? AND status = 'pending'").run(row.approvalId);
+        rejected.push(row.approvalId);
+      } catch { }
+    }
+    return rejected;
+  }
   createTerminalSession(input: Omit<TerminalSession, "id" | "status" | "output" | "exitCode" | "createdAt" | "updatedAt">): TerminalSession { const now = this.now(); const session: TerminalSession = { id: randomUUID(), ...input, status: "running", output: "", exitCode: null, createdAt: now, updatedAt: now }; this.db.prepare("INSERT INTO terminal_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(session.id, session.projectId, session.taskId, session.workingDirectory, session.executable, JSON.stringify(session.args), session.status, session.output, session.exitCode, session.createdAt, session.updatedAt); return session; }
   getTerminalSession(id: string): TerminalSession | undefined { const row = this.db.prepare("SELECT * FROM terminal_sessions WHERE id = ?").get(id) as Record<string, unknown> | undefined; return row ? this.toTerminalSession(row) : undefined; }
   listTerminalSessions(projectId: string): TerminalSession[] { return (this.db.prepare("SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY created_at DESC").all(projectId) as Record<string, unknown>[]).map((row) => this.toTerminalSession(row)); }

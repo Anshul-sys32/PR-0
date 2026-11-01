@@ -8,8 +8,8 @@ import { lstat, open, readFile, readdir, realpath, stat } from "node:fs/promises
 import { join, relative, resolve } from "node:path";
 import { AgentExecutor, loadAgentPrompt } from "@pr-0/agent-core";
 import { AnthropicMessagesAdapter, GeminiAdapter, OllamaAdapter, OpenAIResponsesAdapter, ProviderRegistry, type ModelAdapter, type ModelMessage } from "@pr-0/model-gateway";
-import { browserAutomationRequestSchema, canTransition, createConversationSchema, createMessageSchema, createPlanRequestSchema, createProjectSchema, createTaskSchema, gitRollbackSchema, projectMemoryInputSchema, taskPlanSchema, todoInputSchema, approveSchema, filesystemListInputSchema, filesystemReadInputSchema, filesystemSearchInputSchema, webResearchRequestSchema, runTaskSchema, terminalStartSchema, writeFileSchema, type TaskPlan, type TerminalStartRequest, type WriteFileRequest } from "@pr-0/shared";
-import { isSensitiveFilePath, isWithin, requiresApproval, safeWorkspacePath, verifyResolvedPath, verifyWritePath } from "@pr-0/tool-runtime";
+import { agentWriteFileInputSchema, browserAutomationRequestSchema, canTransition, createConversationSchema, createMessageSchema, createPlanRequestSchema, createProjectSchema, createTaskSchema, gitRollbackSchema, projectMemoryInputSchema, taskPlanSchema, todoInputSchema, approveSchema, filesystemListInputSchema, filesystemReadInputSchema, filesystemSearchInputSchema, webResearchRequestSchema, runTaskSchema, terminalStartSchema, writeFileSchema, type TaskPlan, type TerminalStartRequest, type WriteFileRequest } from "@pr-0/shared";
+import { containsCredentialLikeValue, isSensitiveFilePath, isWithin, requiresApproval, safeWorkspacePath, verifyResolvedPath, verifyWritePath } from "@pr-0/tool-runtime";
 import { DatabaseService } from "./db.js";
 import { automatePublicPage } from "./browser-automation.js";
 import { researchPublicPage } from "./web-research.js";
@@ -28,6 +28,8 @@ export async function createApp(config: Config, database = new DatabaseService(c
   const terminalProcesses = new Map<string, ChildProcess>();
   const activeTaskControllers = new Map<string, AbortController>();
   const activePlans = new Set<string>();
+  const agentApprovalWaiters = new Map<string, (result: unknown) => void>();
+  const agentWriteExecutingTasks = new Set<string>();
   const planProgressSubscribers = new Map<string, Set<ServerResponse>>();
   const lastPlanProgress = new Map<string, string>();
   const ignoredDirectoryNames = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".cache"]);
@@ -256,6 +258,30 @@ export async function createApp(config: Config, database = new DatabaseService(c
     database.audit("filesystem.write", JSON.stringify({ taskId: input.taskId, path: input.path, overwrite: input.overwrite, bytes: Buffer.byteLength(input.content) }));
     return { path: input.path, bytesWritten: Buffer.byteLength(input.content) };
   };
+  const requestAgentWriteApproval = async (task: NonNullable<ReturnType<typeof database.getTask>>, input: unknown, signal: AbortSignal) => {
+    const parsed = agentWriteFileInputSchema.parse(input);
+    if (isSensitiveFilePath(parsed.path)) throw new Error("Agent writes to credential or sensitive files are blocked");
+    if (containsCredentialLikeValue(parsed.content)) throw new Error("Agent write contains a credential-like value");
+    const write = writeFileSchema.parse({ ...parsed, taskId: task.id, projectId: task.projectId, mode: "ask-first" });
+    const approval = database.createFilesystemApproval(task.id, `Agent requests write ${write.path}`, JSON.stringify({ source: "agent-tool", request: write }));
+    database.updateTaskState(task.id, "waiting_for_approval");
+    database.audit("approval.requested", JSON.stringify({ approvalId: approval.id, taskId: task.id, kind: "filesystem.write", source: "agent-tool" }));
+    return await new Promise<unknown>((resolveApproval) => {
+      let settled = false;
+      const finish = (result: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        agentApprovalWaiters.delete(approval.id);
+        if (database.getTask(task.id)?.status === "waiting_for_approval") database.updateTaskState(task.id, "running");
+        resolveApproval(result);
+      };
+      const onAbort = () => finish({ error: "The task was cancelled while waiting for write approval." });
+      agentApprovalWaiters.set(approval.id, finish);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
   const executeTerminal = async (input: TerminalStartRequest) => {
     const project = database.getProject(input.projectId); const task = database.getTask(input.taskId);
     if (!project || !task || task.projectId !== project.id) throw new Error("Task and project must belong to the same workspace");
@@ -425,7 +451,7 @@ export async function createApp(config: Config, database = new DatabaseService(c
     const { projectId } = request.params as { projectId: string };
     if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" });
     const input = projectMemoryInputSchema.parse(request.body);
-    if (/(?:api[_-]?key|password|token|secret|private[_-]?key)\s*[:=]\s*\S+/i.test(input.content) || input.content.includes("-----BEGIN PRIVATE KEY-----")) return reply.code(400).send({ error: "Credential-like values cannot be stored in project memory" });
+    if (containsCredentialLikeValue(input.content)) return reply.code(400).send({ error: "Credential-like values cannot be stored in project memory" });
     const memory = database.createProjectMemory(projectId, input.kind, input.content);
     database.audit("memory.created", JSON.stringify({ projectId, memoryId: memory.id, kind: memory.kind }));
     return reply.code(201).send({ memory });
@@ -434,7 +460,7 @@ export async function createApp(config: Config, database = new DatabaseService(c
     const { projectId, memoryId } = request.params as { projectId: string; memoryId: string };
     if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" });
     const input = projectMemoryInputSchema.parse(request.body);
-    if (/(?:api[_-]?key|password|token|secret|private[_-]?key)\s*[:=]\s*\S+/i.test(input.content) || input.content.includes("-----BEGIN PRIVATE KEY-----")) return reply.code(400).send({ error: "Credential-like values cannot be stored in project memory" });
+    if (containsCredentialLikeValue(input.content)) return reply.code(400).send({ error: "Credential-like values cannot be stored in project memory" });
     const memory = database.updateProjectMemory(projectId, memoryId, input.kind, input.content);
     if (!memory) return reply.code(404).send({ error: "Memory record not found" });
     database.audit("memory.updated", JSON.stringify({ projectId, memoryId, kind: memory.kind }));
@@ -493,11 +519,13 @@ export async function createApp(config: Config, database = new DatabaseService(c
       const result = await new AgentExecutor(model).execute({ ...task, status: "running" }, { systemPrompt: await loadAgentPrompt(task.role), modelId, history: [...memoryContext, ...conversationHistory], maxSteps: config.MAX_TOOL_STEPS_PER_TASK, maxRetries: config.MAX_RETRIES_PER_TASK, signal: controller.signal, tools: [
         { name: "filesystem.list", description: "List files and directories in the active project workspace. Sensitive files and common generated directories are excluded.", parameters: { type: "object", properties: { path: { type: "string" }, maxEntries: { type: "integer", minimum: 1, maximum: 500 } }, additionalProperties: false }, inputSchema: filesystemListInputSchema },
         { name: "filesystem.search", description: "Search UTF-8 text files in the active project workspace. Sensitive files, symlinks, and common generated directories are excluded; results are bounded.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" }, maxResults: { type: "integer", minimum: 1, maximum: 100 } }, required: ["query"], additionalProperties: false }, inputSchema: filesystemSearchInputSchema },
-        { name: "filesystem.read", description: "Read a small UTF-8 file inside the active project workspace. Credential files are blocked.", parameters: { type: "object", properties: { path: { type: "string", description: "Workspace-relative file path" } }, required: ["path"], additionalProperties: false }, inputSchema: filesystemReadInputSchema }
+        { name: "filesystem.read", description: "Read a small UTF-8 file inside the active project workspace. Credential files are blocked.", parameters: { type: "object", properties: { path: { type: "string", description: "Workspace-relative file path" } }, required: ["path"], additionalProperties: false }, inputSchema: filesystemReadInputSchema },
+        { name: "filesystem.write", description: "Propose a UTF-8 text file change inside the active workspace. Every proposal pauses for explicit user approval before any file is written. Sensitive paths and credential-like content are blocked.", parameters: { type: "object", properties: { path: { type: "string", description: "Workspace-relative file path" }, content: { type: "string", maxLength: 100000 }, overwrite: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false }, inputSchema: agentWriteFileInputSchema }
       ], onRetry: (attempt) => { database.recordTaskRetryAttempt(taskId, attempt); database.audit("task.retry", JSON.stringify({ taskId, attempt })); }, executeTool: async (name, input) => {
         if (name === "filesystem.list") { const parsed = filesystemListInputSchema.parse(input); return listProjectFiles(task.projectId, parsed.path, parsed.maxEntries); }
         if (name === "filesystem.search") { const parsed = filesystemSearchInputSchema.parse(input); return searchProjectFiles(task.projectId, parsed.path, parsed.query, parsed.maxResults); }
         if (name === "filesystem.read") { const parsed = filesystemReadInputSchema.parse(input); return readProjectFile(task.projectId, parsed.path); }
+        if (name === "filesystem.write") return requestAgentWriteApproval(task, input, controller.signal);
         throw new Error(`Tool ${name} is not registered`);
       }, onUsage: (usage) => database.addUsage(taskId, { ...usage, provider: model.providerId, model: modelId }) });
       if (controller.signal.aborted || database.getTask(taskId)?.status === "cancelled") return reply.send({ cancelled: true, taskId });
@@ -520,9 +548,56 @@ export async function createApp(config: Config, database = new DatabaseService(c
       if (activeTaskControllers.get(taskId) === controller) activeTaskControllers.delete(taskId);
     }
   });
-  app.post("/api/tasks/:taskId/cancel", async (request, reply) => { const task = database.getTask((request.params as { taskId: string }).taskId); if (!task) return reply.code(404).send({ error: "Task not found" }); if (!canTransition(task.status, "cancelled")) return reply.code(409).send({ error: "Task cannot be cancelled" }); activeTaskControllers.get(task.id)?.abort(new Error("Task cancelled")); database.updateTaskState(task.id, "cancelled"); database.refreshTaskReadiness(task.projectId); const conversationId = database.getTaskConversationId(task.id); if (conversationId) database.addMessage(conversationId, "assistant", "Task cancelled."); database.audit("task.cancelled", task.id); return { ok: true }; });
+  app.post("/api/tasks/:taskId/cancel", async (request, reply) => { const task = database.getTask((request.params as { taskId: string }).taskId); if (!task) return reply.code(404).send({ error: "Task not found" }); if (agentWriteExecutingTasks.has(task.id)) return reply.code(409).send({ error: "An approved write is being completed; cancellation is no longer available" }); if (!canTransition(task.status, "cancelled")) return reply.code(409).send({ error: "Task cannot be cancelled" }); activeTaskControllers.get(task.id)?.abort(new Error("Task cancelled")); const rejectedApprovals = database.rejectAgentWriteApprovalsForTasks([task.id]); for (const approvalId of rejectedApprovals) agentApprovalWaiters.get(approvalId)?.({ error: "The task was cancelled before this write was approved." }); database.updateTaskState(task.id, "cancelled"); database.refreshTaskReadiness(task.projectId); const conversationId = database.getTaskConversationId(task.id); if (conversationId) database.addMessage(conversationId, "assistant", "Task cancelled."); database.audit("task.cancelled", task.id); return { ok: true }; });
   app.post("/api/tasks/:taskId/approvals", async (request, reply) => { const taskId = (request.params as { taskId: string }).taskId; if (!database.getTask(taskId)) return reply.code(404).send({ error: "Task not found" }); return { approval: database.createApproval(taskId, "requested operation", "consequential") }; });
-  app.post("/api/approvals/:approvalId/decision", async (request, reply) => { const approvalId = (request.params as { approvalId: string }).approvalId; const approval = database.getApproval(approvalId); if (!approval) return reply.code(404).send({ error: "Approval not found" }); if (approval.status !== "pending") return reply.code(409).send({ error: "Approval has already been decided" }); const input = approveSchema.parse(request.body); const operation = database.getPendingOperationByApproval(approvalId); database.decideApproval(approvalId, input.approved); if (!operation) return { ok: true }; if (!input.approved) { database.updatePendingOperation(operation.id, "rejected"); database.audit("approval.rejected", approvalId); return { ok: true, operation: "rejected" }; } try { const payload = JSON.parse(operation.payload) as unknown; const result = operation.kind === "filesystem.write" ? await executeWrite(writeFileSchema.parse(payload)) : await executeTerminal(terminalStartSchema.parse(payload)); database.updatePendingOperation(operation.id, "executed"); database.audit("approval.executed", approvalId); return { ok: true, operation: "executed", result }; } catch (error) { database.updatePendingOperation(operation.id, "failed"); database.audit("approval.execution_failed", approvalId); throw error; } });
+  app.post("/api/approvals/:approvalId/decision", async (request, reply) => {
+    const { approvalId } = request.params as { approvalId: string };
+    const approval = database.getApproval(approvalId);
+    if (!approval) return reply.code(404).send({ error: "Approval not found" });
+    if (approval.status !== "pending") return reply.code(409).send({ error: "Approval has already been decided" });
+    const input = approveSchema.parse(request.body);
+    const operation = database.getPendingOperationByApproval(approvalId);
+    if (!operation) {
+      if (!database.decideApproval(approvalId, input.approved)) return reply.code(409).send({ error: "Approval has already been decided" });
+      return { ok: true };
+    }
+    let payload: unknown;
+    try { payload = JSON.parse(operation.payload) as unknown; }
+    catch { return reply.code(409).send({ error: "Approval operation payload is invalid" }); }
+    const agentWrite = operation.kind === "filesystem.write" && typeof payload === "object" && payload !== null && "source" in payload && payload.source === "agent-tool";
+    if (agentWrite) {
+      const task = database.getTask(approval.taskId);
+      if (task?.status !== "waiting_for_approval" || !agentApprovalWaiters.has(approvalId)) return reply.code(409).send({ error: "The agent execution is no longer waiting for this approval" });
+    }
+    if (!database.claimPendingOperation(operation.id)) return reply.code(409).send({ error: "Approval operation is already being processed" });
+    if (!database.decideApproval(approvalId, input.approved)) {
+      database.updatePendingOperation(operation.id, "pending");
+      return reply.code(409).send({ error: "Approval has already been decided" });
+    }
+    if (agentWrite && input.approved) agentWriteExecutingTasks.add(approval.taskId);
+    if (!input.approved) {
+      database.updatePendingOperation(operation.id, "rejected");
+      database.audit("approval.rejected", approvalId);
+      agentApprovalWaiters.get(approvalId)?.({ error: "The user rejected this file change." });
+      return { ok: true, operation: "rejected" };
+    }
+    try {
+      const decoded = payload as { source?: string; request?: unknown };
+      const operationInput = agentWrite ? writeFileSchema.parse(decoded.request) : payload;
+      const result = operation.kind === "filesystem.write" ? await executeWrite(writeFileSchema.parse(operationInput)) : await executeTerminal(terminalStartSchema.parse(operationInput));
+      database.updatePendingOperation(operation.id, "executed");
+      database.audit("approval.executed", approvalId);
+      agentApprovalWaiters.get(approvalId)?.({ approved: true, result });
+      return { ok: true, operation: "executed", result };
+    } catch (error) {
+      database.updatePendingOperation(operation.id, "failed");
+      database.audit("approval.execution_failed", approvalId);
+      agentApprovalWaiters.get(approvalId)?.({ error: error instanceof Error ? error.message : "Approved operation failed" });
+      throw error;
+    } finally {
+      if (agentWrite) agentWriteExecutingTasks.delete(approval.taskId);
+    }
+  });
   app.get("/api/providers", async () => { const modelIds: Record<string, string | undefined> = { mock: "mock", openai: config.OPENAI_MODEL, anthropic: config.ANTHROPIC_MODEL, gemini: config.GEMINI_MODEL, ollama: config.OLLAMA_MODEL }; return { providers: registry.list().map((id) => ({ id, configured: true, defaultModel: modelIds[id] ?? null, capabilities: registry.get(id).getCapabilities(modelIds[id] ?? "user-selected") })), unavailable: [!config.OPENAI_API_KEY && "openai", !config.ANTHROPIC_API_KEY && "anthropic", !config.GEMINI_API_KEY && "gemini"].filter(Boolean) }; });
   app.post("/api/files/read", async (request, reply) => { const body = request.body as { projectId?: string; path?: string }; if (!body.projectId || !body.path) return reply.code(400).send({ error: "projectId and path are required" }); return { file: await readProjectFile(body.projectId, body.path) }; });
   app.post("/api/files/list", async (request, reply) => { const body = request.body as { projectId?: string; path?: string; maxEntries?: number }; if (!body.projectId) return reply.code(400).send({ error: "projectId is required" }); const input = filesystemListInputSchema.parse({ path: body.path, maxEntries: body.maxEntries }); return { listing: await listProjectFiles(body.projectId, input.path, input.maxEntries) }; });

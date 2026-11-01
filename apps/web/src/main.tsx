@@ -13,7 +13,7 @@ type Conversation = { id: string; projectId: string; createdAt: string };
 type ChatMessage = { id: string; conversationId: string; role: "user" | "assistant"; content: string; createdAt: string };
 type FileEntry = { name: string; path: string; type: "file" | "directory" | "symlink" | "other" };
 type SearchMatch = { path: string; line: number; text: string };
-type Approval = { id: string; taskId: string; action: string; risk: string; operationKind: string | null; createdAt: string };
+type Approval = { id: string; taskId: string; action: string; risk: string; operationKind: string | null; createdAt: string; preview?: { path: string; content: string; contentTruncated: boolean; overwrite: boolean } };
 type TerminalSession = { id: string; projectId: string; taskId: string; workingDirectory: string; executable: string; args: string[]; status: "running" | "exited" | "failed" | "stopped"; output: string; exitCode: number | null };
 type GitStatus = { branch: string; changes: Array<{ status: string; path: string }> };
 type GitDiffSummary = { files: Array<{ path: string; added: number | null; deleted: number | null; staged: boolean }>; truncated: boolean };
@@ -24,7 +24,7 @@ type GitRollbackPreview = { checkpointId: string; checkpointHead: string; curren
 type MemoryNote = { id: string; projectId: string; kind: "fact" | "decision" | "outcome"; content: string; createdAt: string; updatedAt: string };
 type UsageSummary = { requests: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number; unknownCostRequests: number };
 type ManualTodo = { id: string; projectId: string; title: string; description: string; priority: number; acceptanceCriteria: string[]; status: "open" | "completed"; createdAt: string; updatedAt: string };
-const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const res = await fetch(`/api${path}`, { headers: { "content-type": "application/json" }, ...init }); const data = await res.json() as T & { error?: string }; if (!res.ok) throw new Error(data.error ?? "Request failed"); return data; };
+const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const headers = new Headers(init?.headers); if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json"); const res = await fetch(`/api${path}`, { ...init, headers }); const data = await res.json() as T & { error?: string }; if (!res.ok) throw new Error(data.error ?? "Request failed"); return data; };
 function App() {
   const [projects, setProjects] = useState<Project[]>([]); const [active, setActive] = useState<Project>(); const [tasks, setTasks] = useState<Task[]>([]); const [message, setMessage] = useState(""); const [status, setStatus] = useState("Connected to local workspace"); const [result, setResult] = useState(""); const [providers, setProviders] = useState<Provider[]>([{ id: "mock", configured: true, defaultModel: "mock" }]); const [unavailableProviders, setUnavailableProviders] = useState<string[]>([]); const [providerId, setProviderId] = useState("mock"); const [modelId, setModelId] = useState("");
   const [agentRole, setAgentRole] = useState("orchestrator");
@@ -156,6 +156,22 @@ function App() {
       setStatus(error instanceof Error ? error.message : "Could not cancel task");
     }
   };
+  useEffect(() => {
+    if (!active || !runningTaskId) return;
+    const refreshTaskApprovals = async () => {
+      try {
+        const [approvalData, taskData] = await Promise.all([
+          api<{ approvals: Approval[] }>(`/projects/${active.id}/approvals`),
+          api<{ tasks: Task[] }>(`/projects/${active.id}/tasks`)
+        ]);
+        setApprovals(approvalData.approvals);
+        setTasks(taskData.tasks);
+      } catch (error) { setStatus(error instanceof Error ? error.message : "Could not refresh task approvals"); }
+    };
+    void refreshTaskApprovals();
+    const timer = setInterval(() => { void refreshTaskApprovals(); }, 500);
+    return () => clearInterval(timer);
+  }, [active?.id, runningTaskId]);
   const openConversation = async (conversationId: string) => {
     setActiveConversationId(conversationId);
     try {
@@ -414,7 +430,7 @@ function App() {
           </div>
           {searchMatches.length ? searchMatches.map((match) => <button className="nav" key={`${match.path}:${match.line}`} onClick={() => void openWorkspaceFile(match.path)}>{match.path}:{match.line}</button>) : fileEntries.map((entry) => <button className="nav" key={entry.path} disabled={entry.type === "symlink"} onClick={() => entry.type === "directory" ? void loadWorkspaceDirectory(entry.path) : entry.type === "file" ? void openWorkspaceFile(entry.path) : undefined}>{entry.type === "directory" ? "▸ " : entry.type === "file" ? "· " : ""}{entry.name}</button>)}
         </section>
-        <section><p>APPROVALS</p>{approvals.length ? approvals.map((approval) => <div className="approval-item" key={approval.id}><b>{approval.action}</b><small>{approval.operationKind ?? "operation"} · {approval.risk}</small><div className="approval-actions"><button onClick={() => void decideApproval(approval, true)}>Approve</button><button onClick={() => void decideApproval(approval, false)}>Reject</button></div></div>) : <div className="empty compact">No pending approvals.</div>}</section>
+        <section><p>APPROVALS</p>{approvals.length ? approvals.map((approval) => <div className="approval-item" key={approval.id}><b>{approval.action}</b><small>{approval.operationKind ?? "operation"} · {approval.risk}</small>{approval.preview && <><small>Target: {approval.preview.path}{approval.preview.overwrite ? " · overwrite" : " · create only"}</small><details className="approval-preview"><summary>Review proposed contents{approval.preview.contentTruncated ? " (preview truncated)" : ""}</summary><pre>{approval.preview.content}</pre></details></>}<div className="approval-actions"><button onClick={() => void decideApproval(approval, true)}>Approve</button><button onClick={() => void decideApproval(approval, false)}>Reject</button></div></div>) : <div className="empty compact">No pending approvals.</div>}</section>
         <section>
           <p>GIT</p>
           <div className="git-actions"><button className="nav" disabled={!active} onClick={() => void refreshGitStatus()}>Refresh status</button><button className="nav" disabled={!active} onClick={() => void createGitCheckpoint()}>Create checkpoint</button></div>

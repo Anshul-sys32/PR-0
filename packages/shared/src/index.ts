@@ -68,6 +68,11 @@ export const createPlanRequestSchema = z.object({
 export type PlannedTask = z.infer<typeof planTaskSchema>;
 export type TaskPlan = z.infer<typeof taskPlanSchema>;
 export const approveSchema = z.object({ approved: z.boolean() });
+export const agentWriteFileInputSchema = z.object({
+  path: z.string().trim().min(1).max(1024),
+  content: z.string().max(100_000),
+  overwrite: z.boolean().default(false)
+});
 export const writeFileSchema = z.object({
   taskId: z.string(), projectId: z.string(), path: z.string().trim().min(1).max(1024), content: z.string().max(200_000),
   overwrite: z.boolean().default(false), mode: z.enum(["ask-first", "supervised", "autonomous"]).default("supervised")
