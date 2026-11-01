@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import type { ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, readFile, readdir, realpath, stat } from "node:fs/promises";
@@ -24,6 +25,8 @@ export async function createApp(config: Config, database = new DatabaseService(c
   const terminalProcesses = new Map<string, ChildProcess>();
   const activeTaskControllers = new Map<string, AbortController>();
   const activePlans = new Set<string>();
+  const planProgressSubscribers = new Map<string, Set<ServerResponse>>();
+  const lastPlanProgress = new Map<string, string>();
   const ignoredDirectoryNames = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".cache"]);
   const runGitCommand = async (projectId: string, args: string[]): Promise<string> => {
     const project = database.getProject(projectId); if (!project) throw new Error("Project not found");
@@ -161,12 +164,28 @@ export async function createApp(config: Config, database = new DatabaseService(c
     return { session };
   };
   app.setErrorHandler((error, _request, reply) => { const failure = error instanceof Error ? error : new Error("Unknown request error"); const status = "statusCode" in failure && typeof failure.statusCode === "number" ? failure.statusCode : 400; reply.status(status).send({ error: failure.message }); });
+  const publishPlanProgress = (planId: string, force = false) => {
+    const plan = database.getTaskPlan(planId);
+    if (!plan) return;
+    const snapshot = JSON.stringify(plan.tasks.map((task) => [task.id, task.status]));
+    if (!force && lastPlanProgress.get(planId) === snapshot) return;
+    lastPlanProgress.set(planId, snapshot);
+    const subscribers = planProgressSubscribers.get(planId);
+    if (!subscribers) return;
+    const event = `data: ${JSON.stringify({ plan })}\n\n`;
+    for (const response of subscribers) {
+      if (response.destroyed || response.writableEnded) subscribers.delete(response);
+      else response.write(event);
+    }
+    if (!subscribers.size) planProgressSubscribers.delete(planId);
+  };
   const schedulePlan = async (planId: string, selection: { providerId: "mock" | "openai" | "anthropic" | "gemini" | "ollama"; modelId?: string }) => {
     try {
       const plan = database.getTaskPlan(planId);
       if (!plan) return;
       for (;;) {
         database.refreshTaskReadiness(plan.projectId);
+        publishPlanProgress(planId);
         const tasks = plan.tasks.map((task) => database.getTask(task.id)).filter((task): task is NonNullable<typeof task> => task !== undefined);
         const unfinished = tasks.filter((task) => task.status === "ready" || task.status === "pending");
         if (!unfinished.length) break;
@@ -185,7 +204,9 @@ export async function createApp(config: Config, database = new DatabaseService(c
       }
       database.audit("task.plan_finished", JSON.stringify({ planId }));
     } finally {
+      publishPlanProgress(planId, true);
       activePlans.delete(planId);
+      lastPlanProgress.delete(planId);
     }
   };
   app.get("/health", async () => ({ ok: true, providers: registry.list() }));
@@ -246,6 +267,28 @@ export async function createApp(config: Config, database = new DatabaseService(c
   app.get("/api/task-plans/:planId", async (request, reply) => {
     const plan = database.getTaskPlan((request.params as { planId: string }).planId);
     return plan ? { plan } : reply.code(404).send({ error: "Task plan not found" });
+  });
+  app.get("/api/task-plans/:planId/events", async (request, reply) => {
+    const { planId } = request.params as { planId: string };
+    if (!database.getTaskPlan(planId)) return reply.code(404).send({ error: "Task plan not found" });
+    const response = reply.raw;
+    reply.hijack();
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "connection": "keep-alive",
+      "x-accel-buffering": "no"
+    });
+    const subscribers = planProgressSubscribers.get(planId) ?? new Set<ServerResponse>();
+    subscribers.add(response);
+    planProgressSubscribers.set(planId, subscribers);
+    publishPlanProgress(planId, true);
+    const heartbeat = setInterval(() => { if (!response.destroyed && !response.writableEnded) response.write(": keep-alive\n\n"); }, 15_000);
+    response.on("close", () => {
+      clearInterval(heartbeat);
+      subscribers.delete(response);
+      if (!subscribers.size) planProgressSubscribers.delete(planId);
+    });
   });
   app.get("/api/projects/:projectId/git/status", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { git: await getGitStatus(projectId) }; });
   app.get("/api/projects/:projectId/git/diff-summary", async (request, reply) => { const { projectId } = request.params as { projectId: string }; if (!database.getProject(projectId)) return reply.code(404).send({ error: "Project not found" }); return { diff: await getGitDiffSummary(projectId) }; });

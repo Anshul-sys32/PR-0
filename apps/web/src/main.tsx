@@ -4,7 +4,7 @@ import "./styles.css";
 import "./workspace.css";
 
 type Project = { id: string; name: string; rootPath: string };
-type Task = { id: string; title: string; status: string; role: string; description: string; retryAttempts?: number; execution?: { provider: string; model: string; retryAttempts: number; result: { summary: string; status: string } } | null };
+type Task = { id: string; title: string; status: string; role: string; description: string; dependencies?: string[]; retryAttempts?: number; execution?: { provider: string; model: string; retryAttempts: number; result: { summary: string; status: string } } | null };
 type TaskPlan = { id: string; projectId: string; summary: string; tasks: Task[] };
 type Provider = { id: string; configured: boolean; defaultModel: string | null };
 type Conversation = { id: string; projectId: string; createdAt: string };
@@ -278,24 +278,27 @@ function App() {
   };
   useEffect(() => {
     if (!activePlan || !planRunActive) return;
-    const pollPlan = async () => {
+    const stream = new EventSource(`/api/task-plans/${activePlan.id}/events`);
+    stream.onmessage = (event) => {
+      let data: { plan: TaskPlan };
       try {
-        const data = await api<{ plan: TaskPlan }>(`/task-plans/${activePlan.id}`);
-        setActivePlan(data.plan);
-        setTasks((current) => current.map((task) => data.plan.tasks.find((plannedTask) => plannedTask.id === task.id) ?? task));
-        const completed = data.plan.tasks.filter((task) => task.status === "completed").length;
-        const terminal = data.plan.tasks.every((task) => ["completed", "failed", "blocked", "cancelled"].includes(task.status));
-        if (terminal) {
-          setPlanRunActive(false);
-          setStatus(`Plan finished: ${completed}/${data.plan.tasks.length} tasks completed.`);
-        }
+        data = JSON.parse(event.data) as { plan: TaskPlan };
       } catch (error) {
-        setStatus(error instanceof Error ? error.message : "Could not refresh plan progress");
+        setStatus(error instanceof Error ? error.message : "Could not parse plan progress");
+        return;
+      }
+      setActivePlan((current) => current?.id === data.plan.id ? data.plan : current);
+      setTasks((current) => current.map((task) => data.plan.tasks.find((plannedTask) => plannedTask.id === task.id) ?? task));
+      const completed = data.plan.tasks.filter((task) => task.status === "completed").length;
+      const terminal = data.plan.tasks.every((task) => ["completed", "failed", "blocked", "cancelled"].includes(task.status));
+      if (terminal) {
+        setPlanRunActive(false);
+        setStatus(`Plan finished: ${completed}/${data.plan.tasks.length} tasks completed.`);
+        stream.close();
       }
     };
-    void pollPlan();
-    const timer = setInterval(() => { void pollPlan(); }, 1000);
-    return () => clearInterval(timer);
+    stream.onerror = () => setStatus("Plan progress connection interrupted; reconnecting…");
+    return () => stream.close();
   }, [activePlan?.id, planRunActive]);
   const visiblePlan = activePlan?.projectId === active?.id ? activePlan : null;
   const completedPlanTasks = visiblePlan?.tasks.filter((task) => task.status === "completed").length ?? 0;
@@ -372,7 +375,7 @@ function App() {
           </section>
           <section className="activity card">
             <div className="card-head"><h2>Agent activity</h2><span className="live">● live</span></div>
-            {visiblePlan && <div className="plan-progress"><div className="plan-progress-copy"><b>{visiblePlan.summary || planSummary}</b><small>{completedPlanTasks}/{visiblePlan.tasks.length} completed · {runningPlanTasks} running · {waitingPlanTasks} waiting · {failedPlanTasks} failed · {blockedPlanTasks} blocked · {cancelledPlanTasks} cancelled</small></div><progress aria-label="Task plan completion" max={visiblePlan.tasks.length} value={completedPlanTasks} /><button disabled={planRunActive || waitingPlanTasks === 0} onClick={() => void runPlan()}>{planRunActive ? "Running…" : "Run plan"}</button></div>}
+            {visiblePlan && <><div className="plan-progress"><div className="plan-progress-copy"><b>{visiblePlan.summary || planSummary}</b><small>{completedPlanTasks}/{visiblePlan.tasks.length} completed · {runningPlanTasks} running · {waitingPlanTasks} waiting · {failedPlanTasks} failed · {blockedPlanTasks} blocked · {cancelledPlanTasks} cancelled</small></div><progress aria-label="Task plan completion" max={visiblePlan.tasks.length} value={completedPlanTasks} /><button disabled={planRunActive || waitingPlanTasks === 0} onClick={() => void runPlan()}>{planRunActive ? "Running…" : "Run plan"}</button></div><ol className="plan-flow" aria-label="Task dependency flow">{visiblePlan.tasks.map((task, index) => { const prerequisites = (task.dependencies ?? []).map((id) => visiblePlan.tasks.find((candidate) => candidate.id === id)?.title ?? "Unknown task"); return <li className={`plan-flow-item status-${task.status}`} key={task.id}><span className="plan-step">{index + 1}</span><div><b>{task.title}</b><small>{task.role} · {task.status}{prerequisites.length ? ` · after ${prerequisites.join(", ")}` : " · no prerequisites"}</small></div></li>; })}</ol></>}
             <div className="agent"><div className="avatar">O</div><div><b>Orchestrator</b><small>Routes plans and verifies completion</small></div><span>{runningTaskId ? "running" : "idle"}</span></div>
             <h3>Execution queue</h3>
             {tasks.length ? tasks.map((task) => <div className="task" key={task.id}><div><b>{task.title}</b><small>{task.role} · {task.status}{(task.retryAttempts ?? task.execution?.retryAttempts ?? 0) > 0 ? ` · ${task.retryAttempts ?? task.execution?.retryAttempts} retry attempts` : ""}</small></div>{task.status === "ready" && <button disabled={Boolean(runningTaskId)} onClick={() => void run(task)}>Run</button>}{runningTaskId === task.id && <button onClick={() => void cancel(task)}>Stop</button>}</div>) : <div className="empty compact">No execution tasks yet.</div>}

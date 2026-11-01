@@ -42,8 +42,8 @@
 ## Verification recorded in this resume
 
 - `npm run typecheck`: passed across shared, model-gateway, tool-runtime, agent-core, server, and web workspaces.
-- `npm test`: passed, 5 test files and 39 tests after plan-run UI and retry-accounting changes.
-- `npx vitest run tests/integration/api.test.ts`: passed, 13 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, and run conflicts.
+- `npm test`: passed, 5 test files and 40 tests after live plan progress and dependency-visualization changes.
+- `npx vitest run tests/integration/api.test.ts`: passed, 14 tests including plan persistence, cycle rejection, bounded scheduling, retry persistence, run conflicts, and SSE progress.
 - `npm run build`: passed across all packages; Vite reports a non-blocking recommendation to switch React plugins for Rolldown performance.
 - `git diff --check`: passed.
 - The Git status and numstat integration test passed against a disposable repository initialized during the test.
@@ -54,7 +54,7 @@
 - Real cloud provider connectivity, browser automation, public web research, and sandbox-restricted bind/process behavior remain unverified.
 
 - [x] Finish Phase 5 UI: add a Run plan control and poll/display plan-level execution progress; persist transient provider retry attempts and expose their count; verify duplicate active task/plan runs return conflicts.
-- [ ] Complete Phase 6 real-time updates and improve task-plan visualization beyond the current one-second plan-progress polling.
+- [x] Complete Phase 6 real-time plan updates with SSE and improve task-plan visualization with an ordered dependency flow and named prerequisites.
 - [ ] Implement browser automation and public web research with strict network controls.
 - [ ] Complete Git integration with patch viewer/history/checkpoints/rollback and add task dependency visualization.
 - [ ] Harden project memory retrieval, improve secret detection, and cover memory UI workflows with browser tests.

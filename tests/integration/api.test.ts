@@ -253,6 +253,50 @@ describe("local workflow", () => {
     } finally { await planApp.close(); }
   });
 
+  it("streams task-plan progress as scheduler statuses change", async () => {
+    const adapter = new ConcurrentPlanAdapter((milliseconds) => delay(milliseconds));
+    const streamApp = await createApp({ NODE_ENV: "test", HOST: "127.0.0.1", PORT: 0, FRONTEND_ORIGIN: "http://localhost:5173", DATABASE_URL: `file:${join(directory, "plan-events.db")}`, PR0_WORKSPACE_ROOT: directory, DEFAULT_AGENT_MODE: "supervised", DEFAULT_TASK_TIMEOUT_MS: 10_000, MAX_CONCURRENT_TASKS: 2, MAX_TOOL_STEPS_PER_TASK: 40, MAX_RETRIES_PER_TASK: 1 }, undefined, [adapter]);
+    const controller = new AbortController();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const project = (await streamApp.inject({ method: "POST", url: "/api/projects", payload: { name: "plan-events", rootPath: directory } })).json().project;
+      const generated = await streamApp.inject({ method: "POST", url: `/api/projects/${project.id}/plan`, payload: { description: "Implement and verify a dashboard feature", providerId: "ollama", modelId: "test-model" } });
+      const planId = generated.json().plan.id as string;
+      const address = await streamApp.listen({ host: "127.0.0.1", port: 0 });
+      const response = await fetch(`${address}/api/task-plans/${planId}/events`, { signal: controller.signal });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      reader = response.body?.getReader();
+      if (!reader) throw new Error("Plan event stream did not provide a response body");
+      let buffer = "";
+      const readPlanEvent = async () => {
+        while (!buffer.includes("\n\n")) {
+          const next = await reader?.read();
+          if (!next || next.done) throw new Error("Plan event stream ended before a complete event arrived");
+          buffer += new TextDecoder().decode(next.value);
+        }
+        const [event, ...rest] = buffer.split("\n\n");
+        buffer = rest.join("\n\n");
+        const data = event?.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+        if (!data) throw new Error("Plan progress event did not contain data");
+        return JSON.parse(data) as { plan: { tasks: Array<{ status: string }> } };
+      };
+      const initial = await readPlanEvent();
+      expect(initial.plan.tasks.map((task) => task.status)).toEqual(["ready", "ready", "pending", "pending"]);
+      const started = await streamApp.inject({ method: "POST", url: `/api/task-plans/${planId}/run`, payload: { providerId: "ollama", modelId: "test-model" } });
+      expect(started.statusCode).toBe(202);
+      let latest = initial;
+      for (let attempt = 0; attempt < 20 && latest.plan.tasks.some((task) => task.status !== "completed" && task.status !== "failed" && task.status !== "blocked" && task.status !== "cancelled"); attempt++) {
+        latest = await readPlanEvent();
+      }
+      expect(latest.plan.tasks.map((task) => task.status)).toEqual(["completed", "completed", "completed", "completed"]);
+    } finally {
+      controller.abort();
+      await reader?.cancel().catch(() => undefined);
+      await streamApp.close();
+    }
+  });
+
   it("persists transient provider retry attempts and returns their count", async () => {
     const databaseUrl = `file:${join(directory, "retry-accounting.db")}`;
     const adapter = new RetryingTestAdapter();
